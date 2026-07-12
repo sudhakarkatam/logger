@@ -1,0 +1,28 @@
+{
+  "name": "life-logger",
+  "version": "1.0.0",
+  "description": "Personal chat-based life logger with AI-powered categorization",
+  "private": true,
+  "scripts": {
+    "dev": "cd client && npm run dev",
+    "server": "nodemon server/index.js",
+    "client": "cd client && npm run dev",
+    "install:all": "npm install && cd client && npm install",
+    "build": "cd client && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@google/genai": "^1.0.0",
+    "@supabase/supabase-js": "^2.110.2",
+    "better-sqlite3": "^11.7.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "groq-sdk": "^0.9.0",
+    "openai": "^4.77.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "nodemon": "^3.1.9"
+  }
+}
