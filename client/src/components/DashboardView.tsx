@@ -17,6 +17,11 @@ export default function DashboardView() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
+  // AI Coach Digest State
+  const [weeklyDigest, setWeeklyDigest] = useState<string | null>(null);
+  const [digestLoading, setDigestLoading] = useState(false);
+  const [digestError, setDigestError] = useState('');
+
   useEffect(() => {
     loadData();
   }, [days]);
@@ -27,11 +32,91 @@ export default function DashboardView() {
       setError('');
       const data = await getWeekData(1, days);
       setWeekData(data);
+      // Reset digest state when timeframe changes
+      setWeeklyDigest(null);
+      setDigestError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGenerateDigest = async () => {
+    try {
+      setDigestLoading(true);
+      setDigestError('');
+      // Request digest calculation from Edge Function
+      const data = await getWeekData(1, days, true);
+      if (data.weeklyDigest) {
+        setWeeklyDigest(data.weeklyDigest);
+      } else {
+        setDigestError('No digest could be compiled. Make sure you have active logs.');
+      }
+    } catch (err) {
+      setDigestError(err instanceof Error ? err.message : 'Failed to generate weekly digest');
+    } finally {
+      setDigestLoading(false);
+    }
+  };
+
+  const renderMarkdown = (text: string) => {
+    const parseInlineStyles = (lineText: string) => {
+      const parts = lineText.split('**');
+      return parts.map((part, index) => {
+        return index % 2 === 1 
+          ? <strong key={index} style={{ color: '#fff', fontWeight: 600 }}>{part}</strong> 
+          : part;
+      });
+    };
+
+    return text.split('\n').map((line, i) => {
+      const trimmed = line.trim();
+
+      // Headers (e.g. #, ##, ###, ####)
+      if (trimmed.startsWith('#')) {
+        const depth = trimmed.match(/^#+/)?.[0].length || 1;
+        const content = trimmed.replace(/^#+\s+/, '');
+        const fontSize = depth === 1 ? '1.35rem' : depth === 2 ? '1.18rem' : depth === 3 ? '1.05rem' : '0.92rem';
+        return (
+          <div key={i} style={{ 
+            fontSize, 
+            fontWeight: 700, 
+            color: '#fff', 
+            marginTop: '20px', 
+            marginBottom: '8px',
+            borderBottom: depth <= 2 ? '1px solid rgba(255,255,255,0.06)' : 'none',
+            paddingBottom: depth <= 2 ? '6px' : '0'
+          }}>
+            {parseInlineStyles(content)}
+          </div>
+        );
+      }
+
+      // Horizontal rules
+      if (trimmed.startsWith('---')) {
+        return <hr key={i} style={{ border: 'none', borderBottom: '1px solid rgba(255,255,255,0.08)', margin: '18px 0' }} />;
+      }
+
+      // Lists / Bullets (e.g. - list, * list, • list)
+      if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('• ')) {
+        const content = trimmed.replace(/^[\-*•]\s+/, '');
+        return (
+          <div key={i} style={{ display: 'flex', gap: '8px', marginLeft: '12px', marginBottom: '6px', alignItems: 'flex-start' }}>
+            <span style={{ color: '#d97706', fontSize: '1.1rem', lineHeight: '1.2' }}>•</span>
+            <span style={{ color: '#e5e7eb', flex: 1, fontSize: '0.88rem' }}>{parseInlineStyles(content)}</span>
+          </div>
+        );
+      }
+
+      // Empty spacing
+      if (trimmed === '') {
+        return <div key={i} style={{ height: '8px' }} />;
+      }
+
+      // Paragraph text
+      return <p key={i} style={{ margin: '0 0 10px 0', color: '#cbd5e1', fontSize: '0.88rem' }}>{parseInlineStyles(trimmed)}</p>;
+    });
   };
 
   if (loading) {
@@ -138,14 +223,12 @@ export default function DashboardView() {
 
   const { grouped, byDay, stats } = getDashboardStats(filteredEntries);
 
-  // Build date range string based on full loaded dataset
-  const dates = Object.keys(weekData.byDay).sort();
-  const startDate = dates.length > 0 
-    ? new Date(dates[0]).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) 
-    : '—';
-  const endDate = dates.length > 0 
-    ? new Date(dates[dates.length - 1]).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) 
-    : '—';
+  // Build date range string based on queried timeframe window
+  const todayObj = new Date();
+  const startDateObj = new Date();
+  startDateObj.setDate(todayObj.getDate() - days);
+  const startDate = startDateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endDate = todayObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
     <div className="dashboard-viewport">
@@ -297,6 +380,100 @@ export default function DashboardView() {
       {/* Conditional Dashboard Grid */}
       {filteredEntries.length > 0 ? (
         <div className="dashboard-grid-box">
+          {/* 📬 AI Coach Digest Section */}
+          <div className="coach-digest-card" style={{
+            background: 'rgba(255, 255, 255, 0.02)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            borderRadius: '16px',
+            padding: '24px',
+            gridColumn: '1 / -1',
+            position: 'relative',
+            overflow: 'hidden',
+            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.2)',
+            backdropFilter: 'blur(8px)',
+            transition: 'all 0.3s ease'
+          }}>
+            {!weeklyDigest && !digestLoading ? (
+              <div style={{ textAlign: 'center', padding: '10px 0' }}>
+                <div style={{ fontSize: '2rem', marginBottom: '8px' }}>📬</div>
+                <h3 style={{ margin: '0 0 6px 0', fontSize: '1.1rem', fontWeight: 600, color: '#f3f4f6' }}>AI Coach Weekly Digest</h3>
+                <p style={{ margin: '0 0 16px 0', fontSize: '0.85rem', color: '#9ca3af', maxWidth: '480px', marginLeft: 'auto', marginRight: 'auto' }}>
+                  Let the AI analyze your {days === 7 ? 'weekly' : days === 30 ? 'monthly' : `${days}-day`} calories, sleep patterns, and budget limits to uncover hidden correlations.
+                </p>
+                <button
+                  onClick={handleGenerateDigest}
+                  className="generate-digest-btn"
+                  style={{
+                    background: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)',
+                    color: '#fff',
+                    border: 'none',
+                    padding: '10px 24px',
+                    borderRadius: '30px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 12px rgba(217, 119, 6, 0.2)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <span>✨ Generate AI Digest</span>
+                </button>
+                {digestError && (
+                  <p style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: '12px', margin: '12px 0 0 0' }}>⚠️ {digestError}</p>
+                )}
+              </div>
+            ) : digestLoading ? (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <div className="digest-loading-shimmer" style={{ display: 'inline-block', width: '40px', height: '40px', borderRadius: '50%', border: '3px solid rgba(217, 119, 6, 0.2)', borderTopColor: '#d97706', animation: 'spin 1s linear infinite', marginBottom: '12px' }}></div>
+                <h4 style={{ margin: '0 0 4px 0', color: '#f3f4f6', fontSize: '0.95rem' }}>Analyzing your habits...</h4>
+                <p style={{ margin: '0', fontSize: '0.78rem', color: '#9ca3af' }}>Calculating aggregates and generating correlations</p>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255, 255, 255, 0.06)', paddingBottom: '12px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '1.25rem' }}>📬</span>
+                    <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600, color: '#f3f4f6' }}>AI Coach Insights</h3>
+                  </div>
+                  <button
+                    onClick={handleGenerateDigest}
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.04)',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      color: '#d1d5db',
+                      padding: '4px 12px',
+                      borderRadius: '16px',
+                      fontSize: '0.72rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    🔄 Refresh
+                  </button>
+                </div>
+                <div 
+                  className="weekly-digest-markdown" 
+                  style={{ 
+                    fontSize: '0.88rem', 
+                    lineHeight: '1.6', 
+                    color: '#e5e7eb'
+                  }}
+                >
+                  {renderMarkdown(weeklyDigest || '')}
+                </div>
+                {digestError && (
+                  <p style={{ color: '#ef4444', fontSize: '0.78rem', marginTop: '12px', marginBottom: 0 }}>⚠️ {digestError}</p>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Overview Banner Card */}
           <WeekSummaryCard stats={stats} byDay={byDay} />
 

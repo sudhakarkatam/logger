@@ -81,6 +81,7 @@ export interface WeekData {
     daysLogged: number;
     mostActiveCategory: string | null;
   };
+  weeklyDigest?: string | null;
 }
 
 // ── Settings ──

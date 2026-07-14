@@ -155,11 +155,24 @@ export async function queryEntries(category?: string, limit = 50): Promise<Entri
 }
 
 // ── Fetch aggregate weekly/monthly analytics ──
-export async function getWeekData(userId = 1, days = 7): Promise<WeekData> {
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/week?userId=${userId}&days=${days}`, {
+export async function getWeekData(userId = 1, days = 7, generateDigest = false): Promise<WeekData> {
+  const config = getLocalSettings();
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/week`, {
+    method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
       'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-    }
+    },
+    body: JSON.stringify({
+      userId,
+      days,
+      generateDigest,
+      config: {
+        provider: config.provider,
+        apiKey: config.apiKey,
+        model: config.model
+      }
+    })
   });
 
   if (!res.ok) {
