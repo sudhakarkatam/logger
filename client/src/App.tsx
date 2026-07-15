@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import ChatView from './components/ChatView';
 import DashboardView from './components/DashboardView';
 import SettingsPanel from './components/SettingsPanel';
+import PantryCookbookView from './components/PantryCookbookView';
 import { getSettings } from './api';
 
-type Tab = 'chat' | 'dashboard' | 'settings';
+type Tab = 'chat' | 'dashboard' | 'settings' | 'pantry';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
@@ -74,6 +75,14 @@ export default function App() {
             </svg>
             <span>Configuration</span>
           </button>
+          <button
+            id="nav-pantry"
+            className={`nav-link ${activeTab === 'pantry' ? 'active' : ''}`}
+            onClick={() => setActiveTab('pantry')}
+          >
+            <span style={{ fontSize: '1.1rem', marginRight: '8px' }}>🍲</span>
+            <span>Pantry & Cookbook</span>
+          </button>
         </nav>
 
         {isReady && (
@@ -104,6 +113,7 @@ export default function App() {
           {activeTab === 'chat' && <ChatView />}
           {activeTab === 'dashboard' && <DashboardView />}
           {activeTab === 'settings' && <SettingsPanel />}
+          {activeTab === 'pantry' && <PantryCookbookView />}
         </div>
 
         {/* Mobile Bottom Tab Navigation */}
@@ -121,6 +131,13 @@ export default function App() {
           >
             <span className="mobile-nav-icon">📊</span>
             <span>Analytics</span>
+          </button>
+          <button
+            className={`mobile-nav-btn ${activeTab === 'pantry' ? 'active' : ''}`}
+            onClick={() => setActiveTab('pantry')}
+          >
+            <span className="mobile-nav-icon">🍲</span>
+            <span>Pantry</span>
           </button>
           <button
             className={`mobile-nav-btn ${activeTab === 'settings' ? 'active' : ''}`}

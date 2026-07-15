@@ -1,16 +1,33 @@
 import { useState, useRef, useEffect } from 'react';
-import { sendMessage, getSettings, uploadMedia } from '../api';
+import { sendMessage, getSettings, uploadMedia, queryEntries } from '../api';
 import type { ChatMessage } from '../types';
 import MessageBubble from './MessageBubble';
 
-const SUGGESTIONS = [
-  { text: 'morning eaten oats and coffee', label: '🥣 Oats & Coffee' },
-  { text: 'feeling happy and energetic today', label: '💪 Happy & Energetic' },
-  { text: 'ran 5k in 25 mins, moderate run', label: '🏃 5K Run' },
-  { text: 'spent 120 on lunch salad', label: '🥗 Spent 120 on Salad' },
-  { text: 'slept 8 hours, felt well rested', label: '😴 8h Restful Sleep' },
-  { text: 'confused what to eat today', label: '💡 What should I eat?' },
+const CATEGORY_CHIPS = [
+  { category: 'meal', prefix: 'log meal: ', label: '🍲 Meals' },
+  { category: 'expense', prefix: 'log expense: ', label: '💳 Spendings' },
+  { category: 'sleep', prefix: 'log sleep: ', label: '😴 Sleep' },
+  { category: 'exercise', prefix: 'log exercise: ', label: '🏃 Exercise' },
+  { category: 'mood', prefix: 'log mood: ', label: '🧠 Mood' },
+  { category: 'water', prefix: 'log water: ', label: '💧 Water' },
+  { category: 'reminder', prefix: 'log reminder: ', label: '⏰ Reminders' },
+  { category: 'idea', prefix: 'log idea: ', label: '💡 Ideas' },
+  { category: 'book', prefix: 'log book: ', label: '📚 Books' },
+  { category: 'other', prefix: 'log note: ', label: '💡 Notes' },
 ];
+
+const DEFAULT_PRESETS: Record<string, string[]> = {
+  meal: ['Oats & Coffee ☕', 'Lunch Salad 🥗', 'Dinner Rice 🍛'],
+  expense: ['Coffee ☕', 'Groceries 🛒', 'Uber 🚗'],
+  sleep: ['7h Sleep 🛌', '8h Restful Sleep 😴', '6h Tired Sleep 🥱'],
+  exercise: ['5K Run 🏃', 'Gym Workout 🏋️', 'Walk 🚶'],
+  mood: ['Happy 😊', 'Energetic 💪', 'Tired 🥱'],
+  water: ['500ml Water 💧', '1L Bottle 🥛', 'Glass of Water 🥤'],
+  reminder: ['Drink Water 💧', 'Take Meds 💊', 'Call Mom 📞'],
+  idea: ['Startup Idea 💡', 'Coding Project 💻', 'Design Concept 🎨'],
+  book: ['Finished Chapter 📖', 'Started New Book 📚', 'Audiobook Session 🎧'],
+  other: ['Study 📚', 'Water Plants 🪴', 'Read Book 📖']
+};
 
 export default function ChatView() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -22,10 +39,29 @@ export default function ChatView() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   
+  const [chefMode, setChefMode] = useState(false);
+
+  // Custom Presets & Shortcuts States
+  const [dbEntries, setDbEntries] = useState<any[]>([]);
+  const [showSlashCommands, setShowSlashCommands] = useState(false);
+  const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Helper to place cursor at the far right/end of input
+  const focusInputAtEnd = (customValue?: string) => {
+    setTimeout(() => {
+      if (inputRef.current) {
+        const val = customValue !== undefined ? customValue : inputRef.current.value;
+        const length = val.length;
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(length, length);
+      }
+    }, 50);
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -34,7 +70,120 @@ export default function ChatView() {
   useEffect(() => {
     inputRef.current?.focus();
     loadActiveModel();
+    loadDbEntries();
   }, []);
+
+  const loadDbEntries = async () => {
+    try {
+      const res = await queryEntries(undefined, 100);
+      if (res.data) {
+        setDbEntries(res.data);
+      }
+    } catch (err) {
+      console.error('Failed to load entries for presets:', err);
+    }
+  };
+
+  const getPresets = (category: string): string[] => {
+    // 1. Check custom overrides from localStorage
+    const rawPresets = localStorage.getItem('life_logger_custom_presets');
+    if (rawPresets) {
+      const parsed = JSON.parse(rawPresets);
+      const customString = parsed[category] || '';
+      if (customString.trim()) {
+        return customString.split(',').map((s: string) => s.trim()).filter(Boolean).slice(0, 3);
+      }
+    }
+
+    // 2. Fall back to local DB entries frequency calculation
+    if (dbEntries.length > 0) {
+      const counts: Record<string, number> = {};
+      dbEntries
+        .filter((e: any) => e.category === category)
+        .forEach((e: any) => {
+          let val = '';
+          if (category === 'meal') {
+            val = e.data?.items?.[0] || e.raw_text || '';
+            val = val.replace(/^log meal:\s*/i, '');
+          } else if (category === 'expense') {
+            val = e.data?.description || e.raw_text || '';
+            val = val.replace(/^log expense:\s*/i, '');
+          } else if (category === 'exercise') {
+            val = e.data?.activity || e.raw_text || '';
+            val = val.replace(/^log exercise:\s*/i, '');
+          } else if (category === 'sleep') {
+            if (e.data?.hours) val = `${e.data.hours}h sleep`;
+          } else if (category === 'mood') {
+            val = e.data?.mood || '';
+          } else if (category === 'water') {
+            val = e.data?.amount || e.raw_text || '';
+            val = val.toString().replace(/^log water:\s*/i, '');
+            if (val && !val.toLowerCase().includes('water')) val = `${val} water`;
+          } else if (category === 'reminder') {
+            val = e.data?.reminder_text || e.raw_text || '';
+            val = val.replace(/^log reminder:\s*/i, '');
+          } else if (category === 'idea') {
+            val = e.data?.idea_text || e.raw_text || '';
+            val = val.replace(/^log idea:\s*/i, '');
+          } else if (category === 'book') {
+            val = e.data?.book || e.data?.title || e.raw_text || '';
+            val = val.toString().replace(/^log book:\s*/i, '');
+          } else {
+            val = e.raw_text || '';
+            val = val.replace(/^log note:\s*/i, '').replace(/^log other:\s*/i, '');
+          }
+          val = val.trim();
+          if (val && val.length < 35) {
+            counts[val] = (counts[val] || 0) + 1;
+          }
+        });
+
+      const sorted = Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(entry => entry[0])
+        .filter(Boolean);
+
+      if (sorted.length > 0) {
+        const result = [...sorted];
+        const defaults = DEFAULT_PRESETS[category] || [];
+        for (const def of defaults) {
+          if (result.length >= 3) break;
+          if (!result.includes(def)) {
+            result.push(def);
+          }
+        }
+        return result.slice(0, 3);
+      }
+    }
+
+    // 3. Fall back to defaults
+    return DEFAULT_PRESETS[category] || [];
+  };
+
+  const getActiveCategory = (): string | null => {
+    const text = input.trim().toLowerCase();
+    if (text.startsWith('log meal:')) return 'meal';
+    if (text.startsWith('log expense:')) return 'expense';
+    if (text.startsWith('log sleep:')) return 'sleep';
+    if (text.startsWith('log exercise:')) return 'exercise';
+    if (text.startsWith('log mood:')) return 'mood';
+    if (text.startsWith('log water:')) return 'water';
+    if (text.startsWith('log reminder:')) return 'reminder';
+    if (text.startsWith('log idea:')) return 'idea';
+    if (text.startsWith('log book:')) return 'book';
+    if (text.startsWith('log note:')) return 'other';
+    return null;
+  };
+
+  const handleInputChange = (val: string) => {
+    setInput(val);
+    if (val.startsWith('/')) {
+      setShowSlashCommands(true);
+      setActiveSlashIndex(0);
+    } else {
+      setShowSlashCommands(false);
+    }
+  };
 
   const loadActiveModel = async () => {
     try {
@@ -119,6 +268,7 @@ export default function ChatView() {
         interactiveCard: response.interactiveCard || null
       };
       setMessages(prev => [...prev, systemMsg]);
+      loadDbEntries(); // dynamically update local presets cache
     } catch (error) {
       const errorMsg: ChatMessage = {
         id: `error-${Date.now()}`,
@@ -174,7 +324,7 @@ export default function ChatView() {
         removeSelectedFile();
       }
 
-      const response = await sendMessage(finalMsgText || '📷 Sent a photo', 1, draftContext, historyPayload, imageUrl);
+      const response = await sendMessage(finalMsgText || '📷 Sent a photo', 1, draftContext, historyPayload, imageUrl, chefMode ? 'pantry' : 'general');
 
       if (response.needs_clarification) {
         setDraftContext(response.draftContext);
@@ -193,6 +343,7 @@ export default function ChatView() {
         interactiveCard: response.interactiveCard || null
       };
       setMessages(prev => [...prev, systemMsg]);
+      loadDbEntries(); // dynamically update local presets cache
     } catch (error) {
       const errorMsg: ChatMessage = {
         id: `error-${Date.now()}`,
@@ -208,6 +359,32 @@ export default function ChatView() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSlashCommands) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveSlashIndex(prev => (prev + 1) % CATEGORY_CHIPS.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveSlashIndex(prev => (prev - 1 + CATEGORY_CHIPS.length) % CATEGORY_CHIPS.length);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const selectedChip = CATEGORY_CHIPS[activeSlashIndex];
+        setInput(selectedChip.prefix);
+        setShowSlashCommands(false);
+        focusInputAtEnd(selectedChip.prefix);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSlashCommands(false);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -303,20 +480,43 @@ export default function ChatView() {
                   <button className="image-preview-remove-btn" onClick={removeSelectedFile} title="Remove file">✕</button>
                 </div>
               )}
+              {showSlashCommands && (
+                <div className="slash-commands-dropdown">
+                  {CATEGORY_CHIPS.map((chip, idx) => (
+                    <button
+                      key={idx}
+                      className={`slash-command-item ${idx === activeSlashIndex ? 'active' : ''}`}
+                      type="button"
+                      onClick={() => {
+                        setInput(chip.prefix);
+                        setShowSlashCommands(false);
+                        focusInputAtEnd(chip.prefix);
+                      }}
+                    >
+                      <span className="slash-command-label">/{chip.category === 'other' ? 'note' : chip.category}</span>
+                      <span className="slash-command-desc">Insert "{chip.prefix}" template</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 id="chat-input"
                 className="chat-text-input"
-                placeholder="Type what you did or upload a photo..."
+                placeholder={
+                  chefMode
+                    ? "Ask Chef: what to cook, list ingredients, or save a recipe..."
+                    : "Type what you did or upload a photo..."
+                }
                 value={input}
-                onChange={e => setInput(e.target.value)}
+                onChange={e => handleInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 disabled={isLoading}
                 autoComplete="off"
                 rows={1}
               />
               <div className="capsule-controls">
-                <div style={{ display: 'flex', gap: '4px' }}>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                   <button type="button" className="capsule-plus-btn" title="Add photo" onClick={() => fileInputRef.current?.click()}>📷</button>
                   <button
                     type="button"
@@ -325,6 +525,26 @@ export default function ChatView() {
                     title={isListening ? "Stop listening" : "Start voice input"}
                   >
                     {isListening ? '🛑' : '🎙️'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChefMode(prev => !prev)}
+                    title={chefMode ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
+                    style={{
+                      background: chefMode ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
+                      border: chefMode ? '1px solid var(--brand-orange)' : 'none',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      color: chefMode ? 'var(--brand-orange)' : 'var(--text-muted)',
+                      transition: 'all var(--transition-fast)'
+                    }}
+                  >
+                    🍲 {chefMode ? 'Chef Mode' : 'Chef'}
                   </button>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -346,15 +566,39 @@ export default function ChatView() {
 
             {/* Suggestion pills aligned beneath the capsule */}
             <div className="hero-suggestions">
-              {SUGGESTIONS.map((s, i) => (
-                <button
-                  key={i}
-                  className="suggestion-card"
-                  onClick={() => handleSend(s.text)}
-                >
-                  {s.label}
-                </button>
-              ))}
+              {getActiveCategory() ? (
+                getPresets(getActiveCategory()!).map((presetText, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    className="suggestion-card preset-card animate-slide-in"
+                    onClick={() => {
+                      const activeCat = getActiveCategory()!;
+                      const prefixObj = CATEGORY_CHIPS.find(c => c.category === activeCat);
+                      const prefix = prefixObj ? prefixObj.prefix : '';
+                      const nextVal = prefix + presetText + ' ';
+                      setInput(nextVal);
+                      focusInputAtEnd(nextVal);
+                    }}
+                  >
+                    {presetText}
+                  </button>
+                ))
+              ) : (
+                CATEGORY_CHIPS.map((chip, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    className="suggestion-card category-card"
+                    onClick={() => {
+                      setInput(chip.prefix);
+                      focusInputAtEnd(chip.prefix);
+                    }}
+                  >
+                    {chip.label}
+                  </button>
+                ))
+              )}
             </div>
           </div>
         ) : (
@@ -401,24 +645,45 @@ export default function ChatView() {
                 <button className="image-preview-remove-btn" onClick={removeSelectedFile} title="Remove file">✕</button>
               </div>
             )}
+            {showSlashCommands && (
+              <div className="slash-commands-dropdown">
+                {CATEGORY_CHIPS.map((chip, idx) => (
+                  <button
+                    key={idx}
+                    className={`slash-command-item ${idx === activeSlashIndex ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => {
+                      setInput(chip.prefix);
+                      setShowSlashCommands(false);
+                      focusInputAtEnd(chip.prefix);
+                    }}
+                  >
+                    <span className="slash-command-label">/{chip.category === 'other' ? 'note' : chip.category}</span>
+                    <span className="slash-command-desc">Insert "{chip.prefix}" template</span>
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               ref={inputRef}
               id="chat-input"
               className="chat-text-input"
               placeholder={
-                draftContext 
-                  ? "Provide clarification requested above..." 
-                  : "Ate oats for breakfast, spent 150 on groceries..."
+                chefMode
+                  ? "Ask Chef: what to cook, list ingredients, or save a recipe..."
+                  : draftContext 
+                    ? "Provide clarification requested above..." 
+                    : "Ate oats for breakfast, spent 150 on groceries..."
               }
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => handleInputChange(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={isLoading}
               autoComplete="off"
               rows={1}
             />
             <div className="capsule-controls">
-              <div style={{ display: 'flex', gap: '4px' }}>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                 <button type="button" className="capsule-plus-btn" title="Add photo" onClick={() => fileInputRef.current?.click()}>📷</button>
                 <button
                   type="button"
@@ -427,6 +692,26 @@ export default function ChatView() {
                   title={isListening ? "Stop listening" : "Start voice input"}
                 >
                   {isListening ? '🛑' : '🎙️'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChefMode(prev => !prev)}
+                  title={chefMode ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
+                  style={{
+                    background: chefMode ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
+                    border: chefMode ? '1px solid var(--brand-orange)' : 'none',
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    color: chefMode ? 'var(--brand-orange)' : 'var(--text-muted)',
+                    transition: 'all var(--transition-fast)'
+                  }}
+                >
+                  🍲 {chefMode ? 'Chef Mode' : 'Chef'}
                 </button>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

@@ -78,7 +78,7 @@ export async function uploadMedia(file: File): Promise<string> {
 }
 
 // ── Send message to Supabase Edge Function ──
-export async function sendMessage(text: string, userId = 1, draftContext: any = null, history: any[] = [], imageUrl?: string): Promise<MessageResponse> {
+export async function sendMessage(text: string, userId = 1, draftContext: any = null, history: any[] = [], imageUrl?: string, mode?: string): Promise<MessageResponse> {
   const config = getLocalSettings();
   console.log(`[API] 💬 Sending message to Edge Function. Text: "${text}"`, {
     userId,
@@ -87,7 +87,8 @@ export async function sendMessage(text: string, userId = 1, draftContext: any = 
     imageUrl: imageUrl || 'none',
     activeProvider: config.provider,
     activeModel: config.model || 'default',
-    hasApiKey: !!config.apiKey
+    hasApiKey: !!config.apiKey,
+    mode: mode || 'general'
   });
 
   const payload = {
@@ -99,12 +100,14 @@ export async function sendMessage(text: string, userId = 1, draftContext: any = 
     config: {
       provider: config.provider,
       apiKey: config.apiKey,
-      model: config.model
+      model: config.model,
+      mode: mode
     }
   };
 
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/message`, {
+    const fnName = mode === 'pantry' ? 'chef' : 'message';
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/${fnName}`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -208,4 +211,98 @@ export async function updateSettings(provider: string, apiKey?: string, model?: 
     apiKey: apiKey !== undefined ? apiKey : current.apiKey
   };
   saveLocalSettings(next);
+}
+
+// ── Query pantry directly ──
+export async function queryPantry(): Promise<{ data: any[] | null, error: string | null }> {
+  const url = `${SUPABASE_URL}/rest/v1/pantry?select=*&order=expiry_date.asc`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      }
+    });
+    if (!res.ok) throw new Error(`Pantry Query failed: ${res.statusText}`);
+    const data = await res.json();
+    return { data, error: null };
+  } catch (err: any) {
+    return { data: null, error: err.message };
+  }
+}
+
+// ── Query recipes directly ──
+export async function queryRecipes(): Promise<{ data: any[] | null, error: string | null }> {
+  const url = `${SUPABASE_URL}/rest/v1/recipes?select=*&order=name.asc`;
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      }
+    });
+    if (!res.ok) throw new Error(`Recipes Query failed: ${res.statusText}`);
+    const data = await res.json();
+    return { data, error: null };
+  } catch (err: any) {
+    return { data: null, error: err.message };
+  }
+}
+
+// ── Delete recipe ──
+export async function deleteRecipe(id: number): Promise<void> {
+  const url = `${SUPABASE_URL}/rest/v1/recipes?id=eq.${id}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+    }
+  });
+  if (!res.ok) throw new Error(`Failed to delete recipe: ${res.statusText}`);
+}
+
+// ── Delete pantry item ──
+export async function deletePantryItem(id: number): Promise<void> {
+  const url = `${SUPABASE_URL}/rest/v1/pantry?id=eq.${id}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+    }
+  });
+  if (!res.ok) throw new Error(`Failed to delete pantry item: ${res.statusText}`);
+}
+
+// ── Update pantry item quantity ──
+export async function updatePantryItemQuantity(id: number, qty: number): Promise<void> {
+  const url = `${SUPABASE_URL}/rest/v1/pantry?id=eq.${id}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Prefer': 'return=representation'
+    },
+    body: JSON.stringify({ quantity: qty })
+  });
+  if (!res.ok) throw new Error(`Failed to update quantity: ${res.statusText}`);
+}
+
+// ── Update pantry item expiry ──
+export async function updatePantryItemExpiry(id: number, expiryDate: string): Promise<void> {
+  const url = `${SUPABASE_URL}/rest/v1/pantry?id=eq.${id}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      'Prefer': 'return=representation'
+    },
+    body: JSON.stringify({ expiry_date: expiryDate })
+  });
+  if (!res.ok) throw new Error(`Failed to update expiry date: ${res.statusText}`);
 }

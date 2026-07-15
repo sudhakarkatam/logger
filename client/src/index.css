@@ -459,6 +459,7 @@ body {
   border-radius: var(--radius-lg);
   padding: 12px;
   transition: border-color var(--transition-fast);
+  position: relative; /* relative anchor for slash commands dropdown */
 }
 
 .input-container:focus-within {
@@ -1124,4 +1125,73 @@ body {
 .weekly-digest-markdown hr {
   margin: 18px 0;
   border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Slash Commands Autocomplete Dropdown ── */
+.slash-commands-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.slash-command-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), transform var(--transition-fast);
+  width: 100%;
+}
+
+.slash-command-item:hover, .slash-command-item.active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.slash-command-item:active {
+  transform: scale(0.995);
+}
+
+.slash-command-label {
+  font-family: monospace;
+  font-weight: 600;
+  color: var(--brand-orange);
+  font-size: 0.95rem;
+}
+
+.slash-command-desc {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ── Animation helper for dynamic transition ── */
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slideInUp 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
