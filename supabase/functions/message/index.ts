@@ -322,6 +322,7 @@ serve(async (req) => {
     // ── DETERMINISTIC CONFIRMATION STATE MACHINE ──
     if (draftContext) {
       let isConfirm = false;
+      let isAccumulate = false;
       let isCancel = false;
       let isKeepBoth = false;
       let isNewCommand = false;
@@ -332,31 +333,34 @@ The user was asked a confirmation question: "${draftContext.clarification_prompt
 The user replied: "${trimmedText}"
 
 Classify the user's reply into one of the following categories:
-- 'confirm': The user is agreeing, confirming, saying yes, or instructing to overwrite/update/delete (e.g., "yes", "overwrite", "do it", "delete it", "yeah", "do that", "confirm").
-- 'keep_both': The user wants to keep both entries, add it anyway, or insert it as a duplicate (e.g., "add this also", "add both", "add anyway", "keep both", "insert anyway", "add soda also", "add it anyway", "add this").
-- 'cancel': The user is denying, cancelling, or saying no (e.g., "no", "cancel", "dont", "no thanks").
-- 'new_command': The user is ignoring the confirmation and typing a completely new logging request, query, or topic (e.g., "slept 8 hours", "what did I spend yesterday?", "hello").
+- 'accumulate': The user wants to accumulate, add to total, sum up, or combine values (e.g., "accumulate", "add to total", "sum them", "combine", "yes accumulate", "total").
+- 'confirm': The user is agreeing, confirming, saying yes, or instructing to overwrite/update/replace (e.g., "yes", "overwrite", "do it", "replace", "yeah", "confirm").
+- 'keep_both': The user wants to keep both entries as separate logs (e.g., "keep both", "separate", "add both", "keep separate").
+- 'cancel': The user is denying, cancelling, or saying no (e.g., "no", "cancel", "dont", "skip").
+- 'new_command': The user is typing a completely new topic.
 
-Return ONLY one of these four strings: 'confirm', 'keep_both', 'cancel', or 'new_command'.`;
+Return ONLY one of these strings: 'accumulate', 'confirm', 'keep_both', 'cancel', or 'new_command'.`;
 
         const decisionText = await callLLM(config, confirmPrompt, trimmedText);
         const decision = decisionText.trim().toLowerCase();
         console.log('[serve] State Machine LLM Decision:', decision);
 
-        if (decision.includes('confirm')) isConfirm = true;
+        if (decision.includes('accumulate')) isAccumulate = true;
+        else if (decision.includes('confirm')) isConfirm = true;
         else if (decision.includes('keep_both')) isKeepBoth = true;
         else if (decision.includes('cancel')) isCancel = true;
         else if (decision.includes('new_command')) isNewCommand = true;
       } catch (err) {
         console.error('[serve] LLM confirmation classification failed, falling back to static keywords:', err);
         const lowerConfirm = trimmedText.toLowerCase();
+        isAccumulate = ['accumulate', 'add to total', 'sum', 'combine', 'total'].some(k => lowerConfirm.includes(k));
         isConfirm = ['yes', 'yeah', 'yep', 'y', 'sure', 'confirm', 'do it', 'overwrite', 'update', 'delete', 'yes please', 'do that', 'ok', 'okay'].includes(lowerConfirm);
-        isCancel = ['no', 'cancel', 'dont', 'don\'t', 'stop', 'nay', 'n', 'no thanks', 'reject'].includes(lowerConfirm);
-        isKeepBoth = ['keep both', 'add both', 'add anyway', 'keep', 'insert anyway'].includes(lowerConfirm);
+        isCancel = ['no', 'cancel', 'dont', 'don\'t', 'stop', 'nay', 'n', 'no thanks', 'reject', 'leave', 'skip'].some(k => lowerConfirm.includes(k));
+        isKeepBoth = ['keep both', 'add both', 'add anyway', 'keep', 'insert anyway', 'separate'].includes(lowerConfirm);
       }
 
-      if (isConfirm || isCancel || isKeepBoth) {
-        console.log(`[serve] State Machine Triggered. User reply: "${trimmedText}". isConfirm: ${isConfirm}, isCancel: ${isCancel}, isKeepBoth: ${isKeepBoth}`);
+      if (isAccumulate || isConfirm || isCancel || isKeepBoth) {
+        console.log(`[serve] State Machine Triggered. User reply: "${trimmedText}". isAccumulate: ${isAccumulate}, isConfirm: ${isConfirm}, isCancel: ${isCancel}, isKeepBoth: ${isKeepBoth}`);
 
         // 1. Deletion Confirmation
         if (draftContext.delete_entry_ids && draftContext.delete_entry_ids.length > 0) {
@@ -390,9 +394,42 @@ Return ONLY one of these four strings: 'confirm', 'keep_both', 'cancel', or 'new
           }
         }
 
-        // 2. Conflict/Overwrite Confirmation
+        // 2. Conflict / Overwrite / Accumulate Confirmation
         if (draftContext.update_entry_id) {
-          if (isConfirm) {
+          const remainingBulkEntries = draftContext.bulk_entries && draftContext.bulk_entries.length > 1
+            ? draftContext.bulk_entries.filter((e: any) => !(e.category === draftContext.category && (e.data?.meal_type === draftContext.data?.meal_type || e.category !== 'meal')))
+            : [];
+
+          if (isAccumulate && draftContext.accumulated_data) {
+            console.log('[serve] State Machine: Accumulating entry ID:', draftContext.update_entry_id);
+            const embedText = `${draftContext.category}: ${draftContext.accumulated_text || draftContext.raw_text} - Data: ${JSON.stringify(draftContext.accumulated_data)}`;
+            const embedding = await getEmbedding(embedText);
+
+            const updatePayload: any = {
+              user_id: userId,
+              raw_text: draftContext.accumulated_text || draftContext.raw_text,
+              category: draftContext.category,
+              data: draftContext.accumulated_data,
+              tags: draftContext.tags || [],
+              event_date: draftContext.event_date || null
+            };
+            if (embedding) updatePayload.embedding = embedding;
+
+            const { data: updated, error } = await supabaseClient
+              .from('entries')
+              .update(updatePayload)
+              .eq('id', draftContext.update_entry_id)
+              .select();
+
+            if (error) throw new Error(error.message);
+
+            return new Response(JSON.stringify({
+              entry: updated[0],
+              acknowledgment: `Successfully accumulated ${draftContext.category} log into daily total! 📊`,
+              needs_clarification: false,
+              draftContext: null,
+            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+          } else if (isConfirm) {
             console.log('[serve] State Machine: Overwriting entry ID:', draftContext.update_entry_id);
             const embedText = `${draftContext.category}: ${draftContext.raw_text} - Data: ${JSON.stringify(draftContext.data || {})}`;
             const embedding = await getEmbedding(embedText);
@@ -414,50 +451,110 @@ Return ONLY one of these four strings: 'confirm', 'keep_both', 'cancel', or 'new
               .eq('id', draftContext.update_entry_id)
               .select();
 
-            if (error) {
-              console.error('[serve] State Machine Overwrite Error:', error.message);
-              throw new Error(error.message);
+            if (error) throw new Error(error.message);
+
+            // Insert remaining non-conflicting bulk entries
+            if (remainingBulkEntries.length > 0) {
+              const insertRows = [];
+              for (const entry of remainingBulkEntries) {
+                const raw = entry.raw_text || `${entry.category} entry`;
+                const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+                const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
+                const emb = await getEmbedding(embedPayload);
+
+                insertRows.push({
+                  user_id: userId,
+                  raw_text: raw,
+                  category: entry.category || 'other',
+                  entry_time: entry.entry_time || new Date().toISOString(),
+                  data: entry.data || {},
+                  embedding: emb || undefined,
+                  tags: rowTags,
+                  event_date: entry.event_date || null
+                });
+              }
+              await supabaseClient.from('entries').insert(insertRows);
             }
+
             return new Response(JSON.stringify({
               entry: updated[0],
-              acknowledgment: 'Successfully updated your existing entry.',
+              acknowledgment: remainingBulkEntries.length > 0
+                ? `Updated ${draftContext.category} and logged ${remainingBulkEntries.length} remaining items!`
+                : 'Successfully updated your existing entry.',
               needs_clarification: false,
               draftContext: null,
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
           } else if (isKeepBoth) {
-            console.log('[serve] State Machine: Keeping both. Inserting new log.');
-            const embedText = `${draftContext.category}: ${draftContext.raw_text} - Data: ${JSON.stringify(draftContext.data || {})}`;
-            const embedding = await getEmbedding(embedText);
+            console.log('[serve] State Machine: Keeping both. Inserting new logs.');
+            const entriesToInsert = draftContext.bulk_entries && draftContext.bulk_entries.length > 0
+              ? draftContext.bulk_entries
+              : [{ raw_text: draftContext.raw_text, category: draftContext.category, data: draftContext.data || {}, tags: draftContext.tags || [], event_date: draftContext.event_date || null }];
 
-            const insertPayload: any = {
-              user_id: userId,
-              raw_text: draftContext.raw_text,
-              category: draftContext.category,
-              entry_time: draftContext.entry_time || new Date().toISOString(),
-              data: draftContext.data || {},
-              tags: draftContext.tags || [],
-              event_date: draftContext.event_date || null
-            };
-            if (embedding) insertPayload.embedding = embedding;
+            const insertRows = [];
+            for (const entry of entriesToInsert) {
+              const raw = entry.raw_text || `${entry.category} entry`;
+              const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+              const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
+              const emb = await getEmbedding(embedPayload);
 
-            const { data: inserted, error } = await supabaseClient
-              .from('entries')
-              .insert([insertPayload])
-              .select();
-
-            if (error) {
-              console.error('[serve] State Machine Keep Both Insert Error:', error.message);
-              throw new Error(error.message);
+              insertRows.push({
+                user_id: userId,
+                raw_text: raw,
+                category: entry.category || 'other',
+                entry_time: entry.entry_time || new Date().toISOString(),
+                data: entry.data || {},
+                embedding: emb || undefined,
+                tags: rowTags,
+                event_date: entry.event_date || null
+              });
             }
+
+            const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
+            if (error) throw new Error(error.message);
+
             return new Response(JSON.stringify({
               entry: inserted[0],
-              acknowledgment: 'Added as a new entry.',
+              acknowledgment: `Added ${inserted.length} entries.`,
               needs_clarification: false,
               draftContext: null,
             }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
           } else {
+            // User cancelled/skipped the conflicting entry - log the remaining items!
+            if (remainingBulkEntries.length > 0) {
+              console.log(`[serve] State Machine: User skipped ${draftContext.category}. Logging remaining ${remainingBulkEntries.length} items...`);
+              const insertRows = [];
+              for (const entry of remainingBulkEntries) {
+                const raw = entry.raw_text || `${entry.category} entry`;
+                const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+                const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
+                const emb = await getEmbedding(embedPayload);
+
+                insertRows.push({
+                  user_id: userId,
+                  raw_text: raw,
+                  category: entry.category || 'other',
+                  entry_time: entry.entry_time || new Date().toISOString(),
+                  data: entry.data || {},
+                  embedding: emb || undefined,
+                  tags: rowTags,
+                  event_date: entry.event_date || null
+                });
+              }
+
+              const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
+              if (error) throw new Error(error.message);
+
+              const itemsSummary = remainingBulkEntries.map((e: any) => e.raw_text).join(', ');
+              return new Response(JSON.stringify({
+                entry: inserted[0],
+                acknowledgment: `Skipped ${draftContext.category} update. Successfully logged remaining item(s): "${itemsSummary}"! 🎬`,
+                needs_clarification: false,
+                draftContext: null,
+              }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+            }
+
             return new Response(JSON.stringify({
               entry: null,
               acknowledgment: 'Cancelled.',
@@ -909,7 +1006,7 @@ Strict Formatting & Presentation Guidelines (CRITICAL):
    - Logging Lookup Queries (e.g., "what did I eat today?", "show logs", "list today's meals"):
      - Use clean human Markdown bullet points (e.g., "* **Breakfast**: 3 poori", "* **Lunch**: Skipped", "* **Snack**: Bonda").
      - NEVER output raw JSON blobs, curly braces `{ }`, or raw string labels like ` -> Data: { "items": ["poori"] } `.
-     - Below the bulleted list, present a clean Markdown table summarizing the details (e.g., columns like `Meal Type | Items | Status`).
+     - Below the bulleted list, present a clean Markdown table summarizing the details (e.g., columns like Meal Type | Items | Status).
    - Recommendation, Planning, or Conversational Queries (e.g., "confused what to eat today", "what to have for dinner"):
      - Do NOT output tables unless requested. Give a direct, friendly response.
 2. Warm, Humorous & Friendly Persona — Buddy:
@@ -998,54 +1095,142 @@ ${historyContext || 'No past logs found.'}`;
     }
 
     // ── DATABASE-LEVEL INTELLECTUAL DUPLICATE VALIDATION ──
-    if (parsed.action === 'insert' && !parsed.needs_clarification) {
+    if ((parsed.action === 'insert' || parsed.action === 'bulk_insert') && !parsed.needs_clarification) {
       const targetDate = parsed.entry_time ? parsed.entry_time.split('T')[0] : new Date().toISOString().split('T')[0];
       let conflictEntryId = null;
       let conflictDetails = '';
+      let conflictingBulkIndex = -1;
 
-      if (parsed.category === 'sleep') {
-        const { data: conflicts } = await supabaseClient
-          .from('entries')
-          .select('id, data')
-          .eq('user_id', userId)
-          .eq('category', 'sleep')
-          .gte('entry_time', `${targetDate}T00:00:00Z`)
-          .lte('entry_time', `${targetDate}T23:59:59Z`);
+      const itemsToCheck = parsed.action === 'bulk_insert' && parsed.bulk_entries && parsed.bulk_entries.length > 0
+        ? parsed.bulk_entries
+        : [parsed];
 
-        if (conflicts && conflicts.length > 0) {
-          conflictEntryId = conflicts[0].id;
-          conflictDetails = `sleep log (${conflicts[0].data?.hours || 8} hours)`;
-        }
-      } else if (parsed.category === 'meal' && parsed.data?.meal_type) {
-        const { data: conflicts } = await supabaseClient
-          .from('entries')
-          .select('id, data')
-          .eq('user_id', userId)
-          .eq('category', 'meal')
-          .eq('data->>meal_type', parsed.data.meal_type)
-          .gte('entry_time', `${targetDate}T00:00:00Z`)
-          .lte('entry_time', `${targetDate}T23:59:59Z`);
+      for (let i = 0; i < itemsToCheck.length; i++) {
+        const item = itemsToCheck[i];
+        const itemCategory = item.category;
+        const itemData = item.data || {};
 
-        if (conflicts && conflicts.length > 0) {
-          conflictEntryId = conflicts[0].id;
-          conflictDetails = `meal log of type "${parsed.data.meal_type}"`;
-        }
-      } else {
-        const embedPayload = `${parsed.category}: ${trimmedText} - Data: ${JSON.stringify(parsed.data)}`;
-        const queryVector = await getEmbedding(embedPayload);
+        if (itemCategory === 'sleep') {
+          const { data: conflicts } = await supabaseClient
+            .from('entries')
+            .select('id, data')
+            .eq('user_id', userId)
+            .eq('category', 'sleep')
+            .gte('entry_time', `${targetDate}T00:00:00Z`)
+            .lte('entry_time', `${targetDate}T23:59:59Z`);
 
-        if (queryVector) {
-          const { data: matches } = await supabaseClient.rpc('match_entries', {
-            query_embedding: queryVector,
-            match_threshold: 0.85,
-            match_count: 5,
-          });
+          if (conflicts && conflicts.length > 0) {
+            conflictEntryId = conflicts[0].id;
+            conflictDetails = `sleep log (${conflicts[0].data?.hours || 8} hours)`;
+            conflictingBulkIndex = i;
+            break;
+          }
+        } else if (itemCategory === 'meal' && itemData?.meal_type) {
+          const { data: conflicts } = await supabaseClient
+            .from('entries')
+            .select('id, data, raw_text')
+            .eq('user_id', userId)
+            .eq('category', 'meal')
+            .eq('data->>meal_type', itemData.meal_type)
+            .gte('entry_time', `${targetDate}T00:00:00Z`)
+            .lte('entry_time', `${targetDate}T23:59:59Z`);
 
-          if (matches && matches.length > 0) {
-            const dateMatch = matches.find((m: any) => m.entry_time.split('T')[0] === targetDate);
-            if (dateMatch) {
-              conflictEntryId = dateMatch.id;
-              conflictDetails = `highly similar ${parsed.category} log ("${dateMatch.raw_text}")`;
+          if (conflicts && conflicts.length > 0) {
+            conflictEntryId = conflicts[0].id;
+            const existingText = conflicts[0].raw_text || conflicts[0].data?.items?.join(', ') || itemData.meal_type;
+            conflictDetails = `${itemData.meal_type} log ("${existingText}")`;
+            conflictingBulkIndex = i;
+            break;
+          }
+        } else if (itemCategory === 'work') {
+          const { data: conflicts } = await supabaseClient
+            .from('entries')
+            .select('id, data, raw_text')
+            .eq('user_id', userId)
+            .eq('category', 'work')
+            .gte('entry_time', `${targetDate}T00:00:00Z`)
+            .lte('entry_time', `${targetDate}T23:59:59Z`);
+
+          if (conflicts && conflicts.length > 0) {
+            conflictEntryId = conflicts[0].id;
+            const prevHours = Number(conflicts[0].data?.duration_hours) || 0;
+            const newHours = Number(itemData.duration_hours) || 0;
+            const accumTotal = prevHours + newHours;
+            const accumMsg = accumTotal > 0 ? ` (accumulate to ${accumTotal}h total)` : '';
+            conflictDetails = `work log (${prevHours > 0 ? prevHours + 'h' : conflicts[0].raw_text})${accumMsg}`;
+            conflictingBulkIndex = i;
+            // Save accumulative calculated payload inside item for State Machine
+            if (accumTotal > 0) {
+              item.accumulated_data = { ...conflicts[0].data, duration_hours: accumTotal };
+              item.accumulated_text = `Worked ${accumTotal} hours total (${conflicts[0].raw_text} + ${item.raw_text || newHours + 'h'})`;
+            }
+            break;
+          }
+        } else if (itemCategory === 'exercise') {
+          const { data: conflicts } = await supabaseClient
+            .from('entries')
+            .select('id, data, raw_text')
+            .eq('user_id', userId)
+            .eq('category', 'exercise')
+            .gte('entry_time', `${targetDate}T00:00:00Z`)
+            .lte('entry_time', `${targetDate}T23:59:59Z`);
+
+          if (conflicts && conflicts.length > 0) {
+            conflictEntryId = conflicts[0].id;
+            const prevMins = Number(conflicts[0].data?.duration_minutes) || 0;
+            const newMins = Number(itemData.duration_minutes) || 0;
+            const accumTotal = prevMins + newMins;
+            const accumMsg = accumTotal > 0 ? ` (accumulate to ${accumTotal} mins total)` : '';
+            conflictDetails = `exercise log (${prevMins > 0 ? prevMins + ' mins' : conflicts[0].raw_text})${accumMsg}`;
+            conflictingBulkIndex = i;
+            if (accumTotal > 0) {
+              item.accumulated_data = { ...conflicts[0].data, duration_minutes: accumTotal };
+              item.accumulated_text = `${itemData.activity || 'Exercise'} for ${accumTotal} mins total`;
+            }
+            break;
+          }
+        } else if (itemCategory === 'expense') {
+          const { data: conflicts } = await supabaseClient
+            .from('entries')
+            .select('id, data, raw_text')
+            .eq('user_id', userId)
+            .eq('category', 'expense')
+            .gte('entry_time', `${targetDate}T00:00:00Z`)
+            .lte('entry_time', `${targetDate}T23:59:59Z`);
+
+          if (conflicts && conflicts.length > 0) {
+            conflictEntryId = conflicts[0].id;
+            const prevAmount = Number(conflicts[0].data?.amount) || 0;
+            const newAmount = Number(itemData.amount) || 0;
+            const accumTotal = prevAmount + newAmount;
+            const accumMsg = accumTotal > 0 ? ` (accumulate to ₹${accumTotal} total)` : '';
+            conflictDetails = `expense log (₹${prevAmount})${accumMsg}`;
+            conflictingBulkIndex = i;
+            if (accumTotal > 0) {
+              item.accumulated_data = { ...conflicts[0].data, amount: accumTotal };
+              item.accumulated_text = `₹${accumTotal} total spent (${conflicts[0].data?.description || conflicts[0].raw_text} + ${itemData.description || item.raw_text})`;
+            }
+            break;
+          }
+        } else {
+          const embedPayload = `${itemCategory}: ${item.raw_text || trimmedText} - Data: ${JSON.stringify(itemData)}`;
+          const queryVector = await getEmbedding(embedPayload);
+
+          if (queryVector) {
+            const { data: matches } = await supabaseClient.rpc('match_entries', {
+              query_embedding: queryVector,
+              match_threshold: 0.85,
+              match_count: 5,
+            });
+
+            if (matches && matches.length > 0) {
+              const dateMatch = matches.find((m: any) => m.entry_time.split('T')[0] === targetDate);
+              if (dateMatch) {
+                conflictEntryId = dateMatch.id;
+                conflictDetails = `highly similar ${itemCategory} log ("${dateMatch.raw_text}")`;
+                conflictingBulkIndex = i;
+                break;
+              }
             }
           }
         }
@@ -1056,12 +1241,20 @@ ${historyContext || 'No past logs found.'}`;
 
         parsed.needs_clarification = true;
         parsed.update_entry_id = conflictEntryId;
-        parsed.clarification_prompt = `You already logged a ${conflictDetails} for ${targetDate}. What would you like to do?`;
+        parsed.clarification_prompt = `You already logged a ${conflictDetails} for ${targetDate}. Do you want to update it, or keep both?`;
 
         // Append Turn 1 variables to draftContext for the deterministic State Machine
         parsed.raw_text = trimmedText;
         parsed.entry_time = parsed.entry_time || new Date().toISOString();
         if (!parsed.tags) parsed.tags = [];
+
+        if (parsed.action === 'bulk_insert' && conflictingBulkIndex >= 0) {
+          // Store the specific conflicting item as the target for update/insert in draftContext
+          const conflictingItem = parsed.bulk_entries[conflictingBulkIndex];
+          parsed.category = conflictingItem.category;
+          parsed.data = conflictingItem.data;
+          parsed.raw_text = conflictingItem.raw_text;
+        }
 
         if (finalImageUrl) {
           parsed.imageUrl = finalImageUrl;
