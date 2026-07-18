@@ -11,30 +11,41 @@ const corsHeaders = {
 
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ── API Key Resolution (from Supabase Edge Function Secrets) ──
+
+const ENV_KEY_MAP: Record<string, string> = {
+  gemini: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  groq2: 'GROQ_API_KEY_2',
+  openrouter: 'OPENROUTER_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+};
+
+const DEFAULT_MODEL_MAP: Record<string, string> = {
+  gemini: 'gemini-2.0-flash',
+  groq: 'llama-3.3-70b-versatile',
+  groq2: 'llama-3.3-70b-versatile',
+  openrouter: 'openrouter/free',
+  openai: 'gpt-4o-mini',
+  anthropic: 'claude-3-5-haiku-latest',
+};
+
+const FALLBACK_CHAIN = ['groq', 'groq2', 'openrouter', 'gemini'];
+
+function resolveApiKey(provider: string): string {
+  const envVar = ENV_KEY_MAP[provider];
+  if (!envVar) return '';
+  return Deno.env.get(envVar) || '';
+}
+
 // ── LLM Client Callers ──
 
-async function callLLM(config: any, systemPrompt: string, userMessage: string): Promise<string> {
-  console.log(`[callLLM] Provider: ${config.provider}, Model: ${config.model || 'default'}`);
-  const { provider, apiKey, model } = config;
-
-  if (!apiKey) {
-    throw new Error(`API key is missing for LLM provider: ${provider}`);
-  }
-
-  const defaultModelMap: Record<string, string> = {
-    gemini: 'gemini-2.0-flash',
-    groq: 'llama-3.3-70b-versatile',
-    openrouter: 'openrouter/free',
-    openai: 'gpt-4o-mini',
-    anthropic: 'claude-3-5-haiku-latest',
-  };
-
-  const activeModel = model || defaultModelMap[provider] || 'gemini-2.0-flash';
-
+async function callLLMDirect(provider: string, apiKey: string, model: string, systemPrompt: string, userMessage: string): Promise<string> {
   if (provider === 'gemini') {
     const ai = new GoogleGenAI({ apiKey });
     const response = await ai.models.generateContent({
-      model: activeModel,
+      model,
       contents: userMessage,
       config: { systemInstruction: systemPrompt },
     });
@@ -42,7 +53,7 @@ async function callLLM(config: any, systemPrompt: string, userMessage: string): 
   }
 
   let baseURL = 'https://api.openai.com/v1';
-  if (provider === 'groq') baseURL = 'https://api.groq.com/openai/v1';
+  if (provider === 'groq' || provider === 'groq2') baseURL = 'https://api.groq.com/openai/v1';
   if (provider === 'openrouter') baseURL = 'https://openrouter.ai/api/v1';
 
   if (provider === 'anthropic') {
@@ -54,7 +65,7 @@ async function callLLM(config: any, systemPrompt: string, userMessage: string): 
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: activeModel,
+        model,
         max_tokens: 1024,
         system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
@@ -70,15 +81,48 @@ async function callLLM(config: any, systemPrompt: string, userMessage: string): 
 
   const client = new OpenAI({ apiKey, baseURL });
   const completion = await client.chat.completions.create({
-    model: activeModel,
+    model,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ],
     temperature: 0.3,
   });
-
   return completion.choices[0].message.content || '';
+}
+
+async function callLLM(config: any, systemPrompt: string, userMessage: string): Promise<string> {
+  const preferredProvider = config.provider || 'gemini';
+  const preferredModel = config.model || DEFAULT_MODEL_MAP[preferredProvider] || 'gemini-2.0-flash';
+
+  // Build fallback chain: preferred provider first, then remaining providers
+  const chain = [preferredProvider, ...FALLBACK_CHAIN.filter(p => p !== preferredProvider)];
+
+  let lastError = '';
+  for (const provider of chain) {
+    const apiKey = resolveApiKey(provider);
+    if (!apiKey) {
+      console.warn(`[callLLM] No API key configured for ${provider}, skipping.`);
+      continue;
+    }
+
+    const model = provider === preferredProvider ? preferredModel : DEFAULT_MODEL_MAP[provider] || 'gemini-2.0-flash';
+
+    try {
+      console.log(`[callLLM] Trying provider: ${provider}, model: ${model}`);
+      const result = await callLLMDirect(provider, apiKey, model, systemPrompt, userMessage);
+      if (provider !== preferredProvider) {
+        console.log(`[callLLM] ⚡ Served by fallback provider: ${provider} (${preferredProvider} was unavailable)`);
+      }
+      return result;
+    } catch (err: any) {
+      lastError = err.message || String(err);
+      console.warn(`[callLLM] ${provider} failed: ${lastError}. Trying next provider...`);
+      continue;
+    }
+  }
+
+  throw new Error(`All LLM providers failed. Last error: ${lastError}`);
 }
 
 // ── Call the Dedicated Internal 'embed' Edge Function ──
@@ -88,7 +132,7 @@ async function getEmbedding(text: string): Promise<number[] | null> {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-    
+
     if (!supabaseUrl) {
       console.error('[getEmbedding] SUPABASE_URL environment variable is missing');
       return null;
@@ -122,13 +166,17 @@ async function getEmbedding(text: string): Promise<number[] | null> {
 // ── Prompt Builders ──
 
 function buildSystemPrompt(timezone: string): string {
-  return `You are a life-logging assistant. Parse the user's message into structured JSON.
+  return `You are Buddy, the user's friendly personal AI companion. Parse the user's message into structured JSON.
+User Name: Sudhakar (call him Buddy or Boss in your acknowledgment).
+Location: South India.
+Tone: Warm, conversational, humorous, witty, and friendly. Chat like a funny roommate and supportive close friend!
+Emoji Rule (STRICT): Use at most ONE single emoji per sentence (e.g. 🥞 or ☕). NEVER stack or group multiple emojis together (e.g. NEVER write 🍕👀💆‍♀️ or 🥳🕺). Keep emoji usage clean and tasteful. Respond strictly and 100% in clean, fluent English ONLY.
 Timezone: ${timezone}
 Current Time: ${new Date().toLocaleString('en-US', { timeZone: timezone })}
 
 Return ONLY a JSON object:
 {
-  "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "other",
+  "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
   "entry_time": ISO 8601 datetime string,
   "data": category-specific fields,
   "tags": string[] or null,
@@ -138,7 +186,7 @@ Return ONLY a JSON object:
   "action": "insert" | "update" | "delete" | "cancel" | "bulk_insert",
   "bulk_entries": [
     {
-      "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "other",
+      "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
       "entry_time": ISO 8601 string,
       "data": object,
       "raw_text": string
@@ -156,12 +204,22 @@ Strict Rules:
      - Otherwise, set "skipped": false.
    - sleep: { "hours": number, "quality": "good|fair|poor|null" }
    - expense: { "amount": number, "currency": "INR", "description": "what it was for", "subcategory": "food|transport|shopping|bills|other" }
+     - For the subcategory field: map wifi bills, current bills, electricity bills, water charges, mobile phone bills, house rents, gas bills, or any bill/utilities to "bills". Map dining out, restaurant, lunch starters, snacks, coffee, tea, biryani, or online food orders to "food".
    - mood: { "mood": "happy|sad|tired|anxious|neutral", "intensity": 1-10 }
    - exercise: { "activity": "running|walking|gym", "duration_minutes": number, "distance_km": number|null }
+   - work: { "description": "what work was done", "project": "project/topic name or null", "duration_hours": number | null }
+     - If the user logs just "work", "worked", or "log work" without any detail, set description to "Software Laptop Work" and duration_hours to null.
+     - Extract duration in hours if specified (e.g., "worked for 5 hours" -> 5, "spent 1.5 hours in meeting" -> 1.5).
+     - If they specify details (e.g., "worked on coding", "work on slide deck", "meeting with client"), extract the description specifically.
    - other: { "description": "text summary" }
-     - Use this category for general knowledge, reminders, plans, pending tasks, learning goals, or any facts/statements the user wants to remember (e.g., "29 july I have a test", "planned to learn React this week").
+     - Use this category for general knowledge, reminders, plans, pending tasks, learning goals, or any facts/statements the user wants to remember.
      - Clean the description to remove trigger phrases like "remember this", "log this", "log it", "save this", or "remind me to" from the final stored description.
-     - If the user's message is describing an event, test, task, meeting, or plan scheduled for a specific date in the future (e.g. "29 july I have a test", "tomorrow meeting"), resolve that date into a "YYYY-MM-DD" string (using the Current Time above as your calendar anchor reference) and set it in the "event_date" root field of the returned JSON object. Otherwise, set "event_date" to null.
+   - query: { "question": "user natural language query" }
+     - If the user asks a question about their logs (e.g., "what did I eat yesterday", "how much did I spend last week", "did I exercise on 29 july"), use this category.
+   - event_date (root field):
+     - If the user explicitly mentions a target date (future or past relative/specific date) in their message for ANY category (e.g. 'breakfast for tomorrow', 'slept 8 hours yesterday', 'wifi bill for next Monday', '29 July I have a test', 'lunch on Friday'), you MUST resolve that date into a "YYYY-MM-DD" string (using the Current Time calendar anchor reference) and save it in the "event_date" root field of the returned JSON object.
+     - This applies to ALL categories (meals, sleep, mood, expenses, exercise, other, query).
+     - Otherwise, if no specific or relative date is mentioned, set "event_date" to null.
 
 2. Clarification & Logging Friction Rules:
    - Do NOT prompt for optional details. If sleep quality or nutrition is missing, default it to null and log it immediately. Do NOT ask for it.
@@ -202,7 +260,30 @@ Strict Rules:
        - Set "action": "insert".
        - Set "needs_clarification": false. (NEVER ask for confirmation when fallback inserting a new entry for an update request).
        - Create the log with the food/items described (e.g. "poori" for meal) and save the tag inside the "tags" array (e.g., ["poori"]).
-       - Set "acknowledgment": "I couldn't find a breakfast entry for today, so I created a new breakfast log with tag: #[tagname]" (where tagname is the tag being added).`;
+       - Set "acknowledgment": "I couldn't find a breakfast entry for today, so I created a new breakfast log with tag: #[tagname]" (where tagname is the tag being added).
+
+7. Casual Exclamations & Conversational Safety (CRITICAL):
+   - If the user's message is a casual reaction, exclamation, conversational remark, or feedback/agreement (e.g., "ooh that is remainder", "nice", "makes sense", "thanks", "ok", "correct", "wow") and does NOT contain any new metrics, food, sleep hours, or reminders they explicitly asked you to remember, you MUST NOT save it directly.
+   - Instead, set "needs_clarification": true.
+   - Set "clarification_prompt": "I noticed you said '[user text]'. Did you want me to log this as a reminder/note, or is it just a comment?"
+
+8. Compound Logging & Multi-Item Splits (CRITICAL - MUST FOLLOW):
+   - If the user mentions MULTIPLE distinct loggable items in a SINGLE message, you MUST NOT combine them into one entry.
+   - This applies to:
+     a) Multiple expenses: "750 for wifi bill and 180 for lunch starters" → 2 expense entries
+     b) Multiple meal types: "had poori for breakfast, rice for lunch, chapati for dinner" → 3 separate meal entries (one per meal_type)
+     c) Mixed categories: "had dosa for breakfast, spent 200 on uber, slept 7 hours" → 3 entries (meal + expense + sleep)
+     d) Any combination of the above
+   - For ALL these cases, set "action": "bulk_insert" and populate "bulk_entries" array with one entry per distinct log.
+   - Each bulk_entries item MUST have its own "category", "entry_time", "data" (with correct category-specific fields), and "raw_text".
+   - For meals specifically: each meal type (breakfast/lunch/dinner/snack) is a SEPARATE entry with its own nutrition estimates.
+   - The acknowledgment should list everything in a friendly, witty way: "Logged breakfast (dosa), ₹200 uber expense, and 7h sleep separately! 🍲💳😴"
+   - NEVER merge multiple meal types or mixed categories into a single entry. breakfast ≠ lunch ≠ dinner ≠ snack.
+
+9. Ambiguous Logging Verification (CRITICAL Doubt-Buster):
+   - If a message contains data (numbers, metrics, foods, expenses, sleep hours) but DOES NOT use an explicit action or logging verb (such as "spent", "paid", "log", "remember", "save", "ate", "had", "slept", "ran", "walked"), you MUST NOT save it directly in the first turn.
+   - Instead, you MUST flag it for confirmation: set "needs_clarification": true, set "clarification_prompt" to a confirmation question (e.g. "I noticed you mentioned '[raw text]'. Did you want me to log this, or is it just a comment?"), and save the parsed log in the "draftContext" (with correct action e.g. "insert" or "bulk_insert").
+   - You are ONLY allowed to save directly in the first turn if the user explicitly uses one of the logging action verbs (e.g. "spent 50 on banana", "log 6 hours sleep", "had oats for breakfast").`;
 }
 
 serve(async (req) => {
@@ -240,14 +321,43 @@ serve(async (req) => {
 
     // ── DETERMINISTIC CONFIRMATION STATE MACHINE ──
     if (draftContext) {
-      const lowerConfirm = trimmedText.toLowerCase();
-      const isConfirm = ['yes', 'yeah', 'yep', 'y', 'sure', 'confirm', 'do it', 'overwrite', 'update', 'delete', 'yes please', 'do that', 'ok', 'okay'].includes(lowerConfirm);
-      const isCancel = ['no', 'cancel', 'dont', 'don\'t', 'stop', 'nay', 'n', 'no thanks', 'reject'].includes(lowerConfirm);
-      const isKeepBoth = ['keep both', 'add both', 'add anyway', 'keep', 'insert anyway'].includes(lowerConfirm);
+      let isConfirm = false;
+      let isCancel = false;
+      let isKeepBoth = false;
+      let isNewCommand = false;
+
+      try {
+        const confirmPrompt = `You are a conversation state assistant.
+The user was asked a confirmation question: "${draftContext.clarification_prompt || 'Are you sure?'}"
+The user replied: "${trimmedText}"
+
+Classify the user's reply into one of the following categories:
+- 'confirm': The user is agreeing, confirming, saying yes, or instructing to overwrite/update/delete (e.g., "yes", "overwrite", "do it", "delete it", "yeah", "do that", "confirm").
+- 'keep_both': The user wants to keep both entries, add it anyway, or insert it as a duplicate (e.g., "add this also", "add both", "add anyway", "keep both", "insert anyway", "add soda also", "add it anyway", "add this").
+- 'cancel': The user is denying, cancelling, or saying no (e.g., "no", "cancel", "dont", "no thanks").
+- 'new_command': The user is ignoring the confirmation and typing a completely new logging request, query, or topic (e.g., "slept 8 hours", "what did I spend yesterday?", "hello").
+
+Return ONLY one of these four strings: 'confirm', 'keep_both', 'cancel', or 'new_command'.`;
+
+        const decisionText = await callLLM(config, confirmPrompt, trimmedText);
+        const decision = decisionText.trim().toLowerCase();
+        console.log('[serve] State Machine LLM Decision:', decision);
+
+        if (decision.includes('confirm')) isConfirm = true;
+        else if (decision.includes('keep_both')) isKeepBoth = true;
+        else if (decision.includes('cancel')) isCancel = true;
+        else if (decision.includes('new_command')) isNewCommand = true;
+      } catch (err) {
+        console.error('[serve] LLM confirmation classification failed, falling back to static keywords:', err);
+        const lowerConfirm = trimmedText.toLowerCase();
+        isConfirm = ['yes', 'yeah', 'yep', 'y', 'sure', 'confirm', 'do it', 'overwrite', 'update', 'delete', 'yes please', 'do that', 'ok', 'okay'].includes(lowerConfirm);
+        isCancel = ['no', 'cancel', 'dont', 'don\'t', 'stop', 'nay', 'n', 'no thanks', 'reject'].includes(lowerConfirm);
+        isKeepBoth = ['keep both', 'add both', 'add anyway', 'keep', 'insert anyway'].includes(lowerConfirm);
+      }
 
       if (isConfirm || isCancel || isKeepBoth) {
         console.log(`[serve] State Machine Triggered. User reply: "${trimmedText}". isConfirm: ${isConfirm}, isCancel: ${isCancel}, isKeepBoth: ${isKeepBoth}`);
-        
+
         // 1. Deletion Confirmation
         if (draftContext.delete_entry_ids && draftContext.delete_entry_ids.length > 0) {
           if (isConfirm) {
@@ -407,48 +517,54 @@ serve(async (req) => {
           }
         }
       }
-      
+
       console.log('[serve] State Machine ignored. User typed a new logging/query instruction.');
     }
 
     // 1. Intent Detection (LOG vs. QUERY)
     let intent = 'LOG';
-    
+
     if (finalImageUrl) {
       intent = 'LOG';
     } else {
       const lowerText = trimmedText.toLowerCase();
       const forceLogKeywords = ['log this message', 'log this', 'remember this', 'remember to', 'save this', 'remind me to', 'note down', 'note this', 'log it', 'remember it'];
-      const hasForceLogKeyword = forceLogKeywords.some(kw => lowerText.includes(kw)) || lowerText.endsWith(' log') || lowerText.endsWith(' remember');
+      const hasForceLogKeyword = forceLogKeywords.some(kw => lowerText.includes(kw));
 
       if (hasForceLogKeyword) {
         intent = 'LOG';
       } else {
-        const isSingleWordCategory = ['sleep', 'expense', 'expenses', 'meals', 'meal', 'mood', 'exercise', 'exercises', 'history', 'logs'].includes(lowerText);
-        const relativeQueryRegex = /(today|yesterday|tomorrow|tonight|last\s+night)\s+(meal|meals|breakfast|lunch|dinner|snack|sleep|exercise|exercises|workout|warmup|gym|expense|expenses|mood|logs|history|activity|activities)/i;
-
-        // Regex matching messages that consist ONLY of hashtags, e.g. "#poori" or "#cheatmeal #healthy"
+        const queryKeywords = [
+          'today logs', 'today\'s logs', 'todays logs', 'show logs', 'my logs', 'recent logs', 'all logs', 'get logs', 'view logs', 'log history',
+          'show', 'display', 'list', 'what', 'how', 'when', 'where', 'did i', 'have i', 'history', 'summary', 'report', 'tell me',
+          'what did i', 'show me', 'list my', 'get my', 'view my', 'check my', 'find my', 'any logs', 'my entries'
+        ];
+        const isQueryPhrase = queryKeywords.some(kw => lowerText.includes(kw));
+        const isSingleWordCategory = ['sleep', 'expense', 'expenses', 'meals', 'meal', 'mood', 'exercise', 'exercises', 'history', 'logs', 'log'].includes(lowerText);
         const onlyHashtagsRegex = /^#[a-zA-Z0-9\-_]+(\s+#[a-zA-Z0-9\-_]+)*$/;
 
-        const queryKeywords = [
-          'what should i', "what's for", 'recommend me', 'suggest', 'where did i', 'when was', 'how much', 'what was my', 'confused', 
-          'sleep data', 'my sleep', 'is it good', 'is it bad', 'what else', 'show', 'list', 'get', 'tell me', 'find', 
-          'did i', 'did I', 'have i', 'have I', 'summarize', 'summary', 'report', 'explain', 'what have i',
-          'gather', 'give data', 'give me data', 'photo', 'picture', 'photos', 'pictures',
-          'what did i have', 'what did i log', 'what did I eat', 'what was my breakfast'
-        ];
-
-        if (isSingleWordCategory || onlyHashtagsRegex.test(trimmedText) || relativeQueryRegex.test(trimmedText) || queryKeywords.some(kw => lowerText.includes(kw))) {
+        if (isQueryPhrase || isSingleWordCategory || onlyHashtagsRegex.test(trimmedText)) {
           intent = 'QUERY';
         } else {
           try {
             const classifierPrompt = `You are an intent classifier.
-Determine if the user message is a 'LOG' instruction (saving/recording new data, e.g. 'log sleep', 'spent 300', 'remember this plan', 'note down Rahul details', 'had oats', 'ate pizza') or a 'QUERY' instruction (looking up data, requesting history/logs, general questions, single/double word lookups like 'expenses', 'today breakfast', 'today meals', 'today sleep', or requests to fetch/gather information).
+Classify the user message: "${trimmedText}"
+${history && history.length > 0 ? `\nRecent conversation context:\n${history.slice(-4).map((h: any) => `${h.role}: "${h.content}"`).join('\n')}\n` : ''}
+
+CRITICAL RULES:
+- If the user is asking to view, list, check, summarize, or ask questions about their logs or history (e.g. "today logs", "show today logs", "what did I eat", "how much did I spend", "my sleep", "yesterday?"), classify STRICTLY as 'QUERY'.
+- ONLY classify as 'LOG' if the user is explicitly telling you to record, save, add, or remember new data points, metrics, activities, notes, or reminders (e.g. "ate oats for breakfast", "spent 100 on groceries", "slept 8 hours").
+
 Reply with exactly one word: 'LOG' or 'QUERY'.`;
             const check = await callLLM(config, classifierPrompt, trimmedText);
-            intent = check.toUpperCase().includes('QUERY') ? 'QUERY' : 'LOG';
+            const res = check.toUpperCase();
+            if (res.includes('LOG') && !res.includes('QUERY')) {
+              intent = 'LOG';
+            } else {
+              intent = 'QUERY';
+            }
           } catch (_) {
-            intent = 'LOG';
+            intent = 'QUERY';
           }
         }
       }
@@ -459,27 +575,103 @@ Reply with exactly one word: 'LOG' or 'QUERY'.`;
 
     // ── CASE A: QUERY (GENERAL ASSISTANT & RAG SEARCH) ──
     if (intent === 'QUERY') {
+      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+      const parts = formatter.formatToParts(new Date());
+      const currentDateOnly = `${parts.find(p => p.type === 'year')?.value}-${parts.find(p => p.type === 'month')?.value}-${parts.find(p => p.type === 'day')?.value}`;
+      const todayFullStr = new Date().toLocaleString('en-US', { timeZone: timezone });
+
+
+
+      // Check if it is a quantitative query requiring database-side math aggregation
+      let aggregateStatsContext = '';
+      const isQuantitativeQuery = /(how\s+(many|much)|total|average|avg|sum\s+of|frequency\s+of|how\s+often)/i.test(trimmedText);
+
+      if (isQuantitativeQuery) {
+        console.log('[serve] Quantitative query detected. Running DB aggregate classifier...');
+        try {
+          const parserPrompt = `You are a query parsing assistant. Analyze this user query: "${trimmedText}"
+Current Time/Calendar Reference: ${todayFullStr}
+
+Extract the quantitative database query parameters as a JSON object:
+{
+  "category": "meal" | "sleep" | "expense" | "mood" | "exercise" | "work" | "other",
+  "op": "count" | "sum" | "avg",
+  "field": string | null,       -- name of JSON key in data object to calculate math on (e.g. 'amount' for expense, 'hours' for sleep, 'calories' for nutrition calories, or null for simple counts)
+  "filter_key": string | null,  -- JSON key inside data object to filter by (e.g., 'meal_type' for meals, 'subcategory' for expenses, 'activity' for exercises, 'skipped' for skipped meals)
+  "filter_val": string | null,  -- value of that JSON key (e.g., 'breakfast' for meal_type, 'food' for subcategory, 'running' for activity, 'true' or 'false' for skipped)
+  "days": number                -- number of days to look back (default to 30 if timeframe is unclear, 365 for past year, 7 for past week, 1 for yesterday/today, etc.)
+}
+
+Return ONLY this JSON object. Do not include markdown code block formatting or explanations.`;
+
+          const parseRes = await callLLM(config, parserPrompt, trimmedText);
+          let cleanedParse = parseRes.trim();
+          const jsonMatch = cleanedParse.match(/\{[\s\S]*?\}/);
+          if (jsonMatch) cleanedParse = jsonMatch[0];
+
+          const parsedParams = JSON.parse(cleanedParse);
+          console.log('[serve] Parsed Quantitative Params:', JSON.stringify(parsedParams));
+
+          if (parsedParams.category && parsedParams.op) {
+            const { data: statsVal, error: statsErr } = await supabaseClient.rpc('get_aggregate_stats', {
+              p_user_id: userId,
+              p_category: parsedParams.category,
+              p_op: parsedParams.op,
+              p_field: parsedParams.field || null,
+              p_filter_key: parsedParams.filter_key || null,
+              p_filter_val: parsedParams.filter_val !== null ? String(parsedParams.filter_val) : null,
+              p_days: parsedParams.days || 30
+            });
+
+            if (statsErr) {
+              console.error('[serve] get_aggregate_stats RPC error:', statsErr.message);
+            } else {
+              console.log('[serve] get_aggregate_stats RPC returned:', statsVal);
+              const opName = parsedParams.op === 'sum' ? 'Total sum' : (parsedParams.op === 'avg' ? 'Average' : 'Total count');
+              const fieldLabel = parsedParams.field ? ` of ${parsedParams.field}` : '';
+              const filterLabel = parsedParams.filter_key ? ` (filtered by ${parsedParams.filter_key} = ${parsedParams.filter_val})` : '';
+
+              aggregateStatsContext = `AGGREGATE DATABASE CALCULATIONS SUMMARY (100% MATHEMATICALLY ACCURATE):
+- Metric: ${opName}${fieldLabel}${filterLabel} over the past ${parsedParams.days} days
+- Exact Computed Value: ${statsVal}
+- Instruction: Use this exact value as the absolute ground-truth for your response. Do not hallucinate or try to count or recalculate it yourself.
+- Formatting Override (CRITICAL): If the timeframe is large (7+ days) or the number of entries is high (more than 15 items), you MUST NOT list individual logs or draw a table detailing every individual log, UNLESS the user explicitly asks you in their query to list, show, or display the entries. Otherwise, simply give a direct conversational answer showing the final calculated number. If they ask for a breakdown, summarize only by high-level groups, but never print a long list of individual transactions.`;
+              console.log('[serve] Aggregate stats injected successfully:', statsVal);
+            }
+          }
+        } catch (err) {
+          console.error('[serve] Failed to parse/execute quantitative query:', err);
+        }
+      }
+
       let historyContext = '';
       const queryVector = await getEmbedding(trimmedText);
       const hashtags = (trimmedText.match(/#([a-zA-Z0-9\-_]+)/g) || []).map(tag => tag.substring(1).toLowerCase());
-      
+
       // Multi-Category Targeted Router Classifier
-      let targetCategories: string[] = ['meal', 'sleep', 'expense', 'mood', 'exercise', 'other'];
-      try {
-        const classifierPrompt = `Identify which log categories are relevant to the user query: "${trimmedText}".
-Available categories: 'meal', 'sleep', 'expense', 'mood', 'exercise', 'other'.
+      let targetCategories: string[] = ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
+      const lowerQuery = trimmedText.toLowerCase();
+      const isGeneralQuery = ['log', 'logs', 'history', 'everything', 'all', 'summary', 'summarize', 'report', 'show all', 'list all'].some(kw => lowerQuery.includes(kw));
+
+      if (isGeneralQuery) {
+        console.log('[serve] General query keyword matched. Bypassing router.');
+      } else {
+        try {
+          const classifierPrompt = `Identify which log categories are relevant to the user query: "${trimmedText}".
+Available categories: 'meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'.
 Return ONLY a JSON array of strings containing the relevant categories, e.g. ["meal"] or ["meal", "sleep"].
-If the query is a general lookup, planning, or is not category-specific, return all categories: ["meal", "sleep", "expense", "mood", "exercise", "other"].`;
-        const res = await callLLM(config, classifierPrompt, trimmedText);
-        let cleaned = res.trim();
-        const jsonMatch = cleaned.match(/\[[\s\S]*?\]/);
-        if (jsonMatch) cleaned = jsonMatch[0];
-        const parsedCats = JSON.parse(cleaned);
-        if (Array.isArray(parsedCats) && parsedCats.length > 0) {
-          targetCategories = parsedCats;
+If the query is a general lookup, planning, or is not category-specific, return all categories: ["meal", "sleep", "expense", "mood", "exercise", "work", "other"].`;
+          const res = await callLLM(config, classifierPrompt, trimmedText);
+          let cleaned = res.trim();
+          const jsonMatch = cleaned.match(/\[[\s\S]*?\]/);
+          if (jsonMatch) cleaned = jsonMatch[0];
+          const parsedCats = JSON.parse(cleaned);
+          if (Array.isArray(parsedCats) && parsedCats.length > 0) {
+            targetCategories = parsedCats;
+          }
+        } catch (err) {
+          console.error('[serve] Targeted category classification failed:', err);
         }
-      } catch (err) {
-        console.error('[serve] Targeted category classification failed:', err);
       }
       console.log('[serve] Targeted Categories:', JSON.stringify(targetCategories));
 
@@ -510,7 +702,7 @@ If the query is a general lookup, planning, or is not category-specific, return 
         .select('id, entry_time, category, raw_text, data, tags, event_date')
         .eq('user_id', userId)
         .in('category', targetCategories);
-      
+
       if (hashtags.length > 0) {
         queryBuilder = queryBuilder.contains('tags', hashtags);
       }
@@ -525,10 +717,7 @@ If the query is a general lookup, planning, or is not category-specific, return 
         recentLogs = recentData;
       }
 
-      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
-      const parts = formatter.formatToParts(new Date());
-      const currentDateOnly = `${parts.find(p => p.type === 'year')?.value}-${parts.find(p => p.type === 'month')?.value}-${parts.find(p => p.type === 'day')?.value}`;
-      const todayFullStr = new Date().toLocaleString('en-US', { timeZone: timezone });
+      // Date formatter variables are declared at the start of Case A QUERY block.
 
       // Load calendar events scheduled from today onwards
       let calendarEvents: any[] = [];
@@ -561,14 +750,14 @@ If the query is a general lookup, planning, or is not category-specific, return 
 
       if (summaryData && summaryData.length > 0) {
         const dailySummaries: Record<string, { calories: number, sleep_hours: number, expense_inr: number, exercises: string[] }> = {};
-        
+
         summaryData.forEach((row: any) => {
           const dateStr = row.entry_time.split('T')[0];
           if (!dailySummaries[dateStr]) {
             dailySummaries[dateStr] = { calories: 0, sleep_hours: 0, expense_inr: 0, exercises: [] };
           }
           const day = dailySummaries[dateStr];
-          
+
           if (row.category === 'meal' && row.data) {
             if (row.data.nutrition?.calories) {
               day.calories += Number(row.data.nutrition.calories);
@@ -614,7 +803,7 @@ If the query is a general lookup, planning, or is not category-specific, return 
           const d2 = new Date(entryDateStr + 'T00:00:00');
           const diffTime = d2.getTime() - d1.getTime();
           const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-          
+
           let relativeStr = '';
           if (diffDays === 0) relativeStr = 'today';
           else if (diffDays === 1) relativeStr = 'tomorrow';
@@ -627,8 +816,62 @@ If the query is a general lookup, planning, or is not category-specific, return 
             calendarStr = ` [Scheduled Event Date: ${e.event_date}]`;
           }
 
-          return `-[Date: ${entryDateStr}] (${relativeStr})${calendarStr} [Category: ${e.category}] User logged: "${e.raw_text}" -> Structured Data: ${JSON.stringify(e.data)}`;
+          let detailsStr = '';
+          if (e.data) {
+            if (e.category === 'meal') {
+              detailsStr = e.data.skipped
+                ? `Skipped ${e.data.meal_type || 'meal'}`
+                : `${e.data.meal_type || 'Meal'}: ${(Array.isArray(e.data.items) && e.data.items.length > 0 ? e.data.items.join(', ') : e.raw_text)}`;
+            } else if (e.category === 'sleep') {
+              detailsStr = `${e.data.hours || 0} hours sleep`;
+            } else if (e.category === 'expense') {
+              detailsStr = `₹${e.data.amount || 0} for ${e.data.description || e.raw_text}`;
+            } else if (e.category === 'exercise') {
+              detailsStr = `${e.data.activity || 'Exercise'} (${e.data.duration_minutes || 0} mins)`;
+            } else if (e.category === 'work') {
+              detailsStr = `${e.data.description || 'Work'} (${e.data.duration_hours || 'N/A'} hrs)`;
+            } else {
+              detailsStr = e.raw_text;
+            }
+          } else {
+            detailsStr = e.raw_text;
+          }
+
+          return `-[Date: ${entryDateStr}] (${relativeStr})${calendarStr} [Category: ${e.category}] Text: "${e.raw_text}" | Summary: ${detailsStr}`;
         }).join('\n');
+      }
+
+      // Conditional Recipes & Pantry loading in general mode
+      const isRecipeOrPantryQuery = /(recipe|pantry|cook|fridge|kitchen|ingredient|stock)/i.test(trimmedText);
+      let conditionalKitchenContext = '';
+
+      if (isRecipeOrPantryQuery) {
+        console.log('[serve] Loading conditional kitchen context in general mode...');
+        const { data: pantryStock } = await supabaseClient
+          .from('pantry')
+          .select('name, quantity, unit, expiry_date')
+          .eq('user_id', userId)
+          .order('expiry_date', { ascending: true });
+
+        const { data: recipes } = await supabaseClient
+          .from('recipes')
+          .select('name, ingredients, instructions')
+          .eq('user_id', userId);
+
+        const pantryStockStr = pantryStock && pantryStock.length > 0
+          ? pantryStock.map((p: any) => `- "${p.name}": ${p.quantity} ${p.unit} (Expires: ${p.expiry_date || 'No Expiry'})`).join('\n')
+          : 'Pantry is empty.';
+
+        const recipesStr = recipes && recipes.length > 0
+          ? recipes.map((r: any) => `- "${r.name}": Requires ${JSON.stringify(r.ingredients)}. Instructions: ${r.instructions || 'None'}`).join('\n')
+          : 'No recipes saved in your cookbook.';
+
+        conditionalKitchenContext = `\n\nCONDITIONAL KITCHEN & COOKBOOK CONTEXT (Only answer using this if user asks about cooking, ingredients, recipes, or pantry):
+CURRENT PANTRY STOCK:
+${pantryStockStr}
+
+SAVED RECIPES:
+${recipesStr}`;
       }
 
       const queryPrompt = `You are the user's personal Second Brain knowledge base assistant.
@@ -637,15 +880,23 @@ Answer the user's question based on their logs.
 Current Date/Time: ${todayFullStr}
 Current Date: ${currentDateOnly} (Timezone: ${timezone})
 
-${dailyMetricsContext}
+${aggregateStatsContext ? `${aggregateStatsContext}\n\n` : ''}${dailyMetricsContext}${conditionalKitchenContext}
 
 Strict Rules for Date-Relative Queries (CRITICAL):
 1. When the user asks about "today", "yesterday", "this week", or "last week", you MUST compare the dates of the entries in the HISTORICAL DIARY LOGS with the Current Date (${currentDateOnly}).
-2. If the user asks about a specific period (like "today" or "yesterday") and there are NO logs in the context matching that exact date, you MUST explicitly state that they have no logs recorded for that period. Do NOT hallucinate.
-3. You can politely guide the user by adding: "You haven't logged any meals today (${currentDateOnly}), but yesterday you logged: ..."
+2. If the user asks about a specific period (like "today", "yesterday", "past 2 days", or "this week") and there are NO logs in the context matching that exact date range, you MUST explicitly state that they have no logs recorded for that period. Do NOT show or fall back to any logs from older dates outside the requested period.
+3. You MUST strictly respect the timeline boundaries of the user's query. If the user asks about "the past 2 days only", "today", or "yesterday", you are forbidden from displaying, referencing, or building tables for any logs older than that period (e.g. if today is 2026-07-14, do not show logs from 2026-07-11 or 2026-07-10). If no data exists for those days, simply state: "You haven't logged any [category/meal] data for today (YYYY-MM-DD) or yesterday (YYYY-MM-DD)."
 4. If a log exists for the requested period (e.g. today) but optional details (like nutrition macros, sleep quality, or specific tags) are not present, do NOT say "You haven't logged any [category] today" in your opening sentence. Instead, state clearly what WAS logged (e.g. "You logged breakfast today: poori") and then list whatever information is available.
 5. If the user asks about skipped meals or events (e.g. "when did I skip lunch?", "show skip lunch data", "skipped meals history"), search the HISTORICAL DIARY LOGS for meal entries where the "skipped" boolean field in data is true. List all such occurrences with their dates and specific meal types in a clear list or table.
 6. When comparing dates or checking if an event is within a certain number of days (e.g. "in the next 10 days"), look at the relative day offset string in parentheses (e.g., "(18 days from now)" or "(3 days ago)") provided next to each entry in the HISTORICAL DIARY LOGS. Do NOT rely on your own date math; trust the relative offset string completely to determine if a log falls inside the requested timeframe.
+7. Expense Subcategory Calculations (CRITICAL):
+   - If the user asks for expense totals of a specific subcategory (e.g., 'outside food', 'eating out', 'bills', 'wifi bills', 'travel/transport') for a timeframe (e.g. this week or this month):
+     - Filter the HISTORICAL DIARY LOGS for 'expense' entries that fit that time range.
+     - Intelligently map their request to the stored subcategory or descriptions (e.g., wifi bill and electricity are 'bills'; lunch starters and restaurants are 'food').
+     - Mathematically sum up their amounts and display the total in INR (e.g., "Total bills this week: ₹1,200 (₹750 wifi + ₹450 electricity)"). Do NOT hallucinate. Show the math step-by-step and list each contributing transaction.
+8. Scheduled / Target Date Rule (CRITICAL):
+   - If an entry has a 'Scheduled Event Date' (event_date) matching the queried date (e.g. today ${currentDateOnly}), you MUST treat and count it as logged for that queried date directly, even if the entry's original entry_time date was in the past (e.g. logged yesterday).
+   - Do NOT tell the user "You haven't logged any breakfast data for today" if a scheduled entry exists for today; report it directly as today's log.
 
 Strict Completeness Rule (CRITICAL):
 - You MUST list and describe EVERY SINGLE LOG entry that matches the requested period (e.g. today, yesterday, or a specific range) present in the HISTORICAL DIARY LOGS.
@@ -653,44 +904,26 @@ Strict Completeness Rule (CRITICAL):
 - Do NOT summarize or only list the most recent one.
 - Clearly distinguish each log by its specific details (e.g., meal items, meal types, sleep hours, activity duration).
 
-Strict Context Continuation & Ellipsis Rule (CRITICAL):
-- When the user asks a very short follow-up question (e.g., "yesterday", "what about yesterday?", "and dinner?", "any sleep?", "for lunch?", "show details"), they are using an ellipsis to refer back to the exact topic and category discussed in the previous turn.
-- You MUST analyze the CONVERSATION HISTORY to identify what specific category, subcategory, topic, or sub-field (e.g., "breakfast" under category "meal", or "sleep hours") was being discussed in the last turn.
-- You MUST then interpret their short question (e.g. "yesterday") as referring STRICTLY to that same topic/sub-field. 
-- For example, if they just asked "today breakfast" and then say "yesterday", they want to see "yesterday's breakfast" ONLY. You MUST filter out all other yesterday logs (such as lunch, dinner, sleep, expenses) and only report the breakfast logs. If no breakfast was logged yesterday, explicitly state that.
-
-Strict Source of Truth Rule (CRITICAL):
-- You MUST only base your knowledge of what the user has logged on the entries listed under the "HISTORICAL DIARY LOGS" section.
-- The "CONVERSATION HISTORY" section is ONLY provided to understand the conversational context (such as identifying follow-up ellipsis requests). 
-- You MUST NEVER assume that any log mentioned in the "CONVERSATION HISTORY" actually exists in the database unless you also see it listed in the "HISTORICAL DIARY LOGS" section. 
-- Specifically, if the user or assistant talked about creating, updating, deleting, or confirming a log in the chat history, but that log is not present in the "HISTORICAL DIARY LOGS" list, you MUST assume it was cancelled or never saved, and state that it does not exist in the records.
-
 Strict Formatting & Presentation Guidelines (CRITICAL):
 1. Distinguish between Lookup Queries and Recommendation/Analytical Queries:
    - Logging Lookup Queries (e.g., "what did I eat today?", "show logs", "list today's meals"):
-     - Use the Parser Layout Style (Screenshot 2 Style): First, present a brief, parsed bulleted list describing each log (e.g., "* **A meal log for breakfast**: poori", "* **A meal log indicating that you skipped lunch**", "* **An 'other' log**: 29 July I have a test").
-     - Then, below the bulleted list, present a clean Markdown table summarizing the details (e.g., columns like "Meal Type | Items | Nutrition | Skipped" or "Description | Category").
-   - Recommendation, Planning, or Conversational Queries (e.g., "confused what to eat today", "what to have for dinner", "what should I eat now?", "any recommendation?"):
-     - You MUST NOT output any bulleted lists of today's logs or Markdown tables unless the user explicitly requested them.
-     - Instead, give a direct, friendly, and conversational response (chatting like a friend).
-     - Analyze the current local time (${todayFullStr} in timezone ${timezone}) to determine which meal it is (Breakfast: 6 AM - 11 AM, Lunch: 12 PM - 3 PM, Snack: 4 PM - 6 PM, Dinner: 7 PM - 11 PM).
-     - Inspect what they already logged today (e.g., they had breakfast and a snack, but skipped lunch) and cross-reference this with their HISTORICAL DIARY LOGS to see what they typically eat for the current meal slot (e.g., what they usually eat for dinner).
-     - Give a personalized, friendly suggestion that complements what they ate today and aligns with their habits (e.g., "Since it's dinner time in India (10:50 PM), and you already had poori for breakfast today, I suggest a lighter dinner like chapati or soup which you usually enjoy!").
-2. Strict Image Display Rule:
-   - You MUST NOT embed or display images in the chat (i.e., do NOT use ![alt](url)) unless the user EXPLICITLY asks to see images, photos, or pictures in their query (e.g., "show the photo I sent today", "display the image for my breakfast").
-   - If the user is just asking for general logs (e.g. "today logs"), you can simply write "(with photo attached)" in text but do NOT render/embed the image.
-   - If they explicitly request images and multiple images are found, render them sequentially using standard markdown.
-3. Warm & Friendly Persona:
-   - Chat like a close friend and supportive personal coach. Be warm, encouraging, and feel free to use light humor or friendly wit where appropriate. Keep explanations direct and avoid dry or robotic corporate speak.
-4. Avoid wordy explanations. Start with a direct, single-sentence response, followed by the formatted data.
-5. Translate raw JSON data into friendly human terms (e.g., instead of displaying {"fat_g": null}, display it as not recorded or omit it).
+     - Use clean human Markdown bullet points (e.g., "* **Breakfast**: 3 poori", "* **Lunch**: Skipped", "* **Snack**: Bonda").
+     - NEVER output raw JSON blobs, curly braces `{ }`, or raw string labels like ` -> Data: { "items": ["poori"] } `.
+     - Below the bulleted list, present a clean Markdown table summarizing the details (e.g., columns like `Meal Type | Items | Status`).
+   - Recommendation, Planning, or Conversational Queries (e.g., "confused what to eat today", "what to have for dinner"):
+     - Do NOT output tables unless requested. Give a direct, friendly response.
+2. Warm, Humorous & Friendly Persona — Buddy:
+   - Chat like a close friend, supportive coach, and witty roommate with a great sense of humor!
+   - Emoji Rule (STRICT): Use at most ONE single emoji per bullet point or sentence (e.g. 🥞 or ☕). NEVER group or stack multiple emojis together (e.g. NEVER write 🍕👀💆‍♀️ or 🥳🕺 or 🍿😂). Keep emoji usage clean and subtle.
+   - Respond strictly in 100% clean, fluent English.
+3. Translate raw data into friendly human terms (e.g. display skipped meals cleanly as "Skipped").
 
 HISTORICAL DIARY LOGS:
 ${historyContext || 'No past logs found.'}`;
 
       let userMsg = '';
       if (history && history.length > 0) {
-        userMsg += `CONVERSATION HISTORY:\n` + history.map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
+        userMsg += `CONVERSATION HISTORY:\n` + history.slice(-8).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
       }
       userMsg += `USER MESSAGE: "${trimmedText}"`;
 
@@ -709,21 +942,21 @@ ${historyContext || 'No past logs found.'}`;
       .select('id, raw_text, category, entry_time, data, tags')
       .eq('user_id', userId)
       .order('entry_time', { ascending: false })
-      .limit(15); 
+      .limit(15);
 
     const systemPrompt = buildSystemPrompt(timezone);
 
     let userMsg = '';
     if (history && history.length > 0) {
-      userMsg += `CONVERSATION HISTORY:\n` + history.map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
+      userMsg += `CONVERSATION HISTORY:\n` + history.slice(-8).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
     }
     userMsg += `USER MESSAGE: "${trimmedText}"`;
     if (finalImageUrl) {
       userMsg += `\n[Attached Image Link: ${finalImageUrl}]`;
     }
     if (recentEntries && recentEntries.length > 0) {
-      userMsg += `\n\nRECENT LOGS:\n` + recentEntries.map((e: any, i: number) => 
-        `${i+1}. [${e.category}] Date: ${e.entry_time.split('T')[0]} | LOG_ID: ${e.id} | Raw: ${e.raw_text} | Tags: ${JSON.stringify(e.tags || [])} | Data: ${JSON.stringify(e.data)}`
+      userMsg += `\n\nRECENT LOGS:\n` + recentEntries.map((e: any, i: number) =>
+        `${i + 1}. [${e.category}] Date: ${e.entry_time.split('T')[0]} | LOG_ID: ${e.id} | Raw: ${e.raw_text} | Tags: ${JSON.stringify(e.tags || [])} | Data: ${JSON.stringify(e.data)}`
       ).join('\n');
     }
 
@@ -735,6 +968,26 @@ ${historyContext || 'No past logs found.'}`;
 
     const parsed = JSON.parse(jsonStr);
     console.log('[serve] Structured LLM Parse:', JSON.stringify(parsed));
+
+    // ── PROGRAMMATIC DOUBT-BUSTER GUARD ──
+    const explicitLoggingVerbs = [
+      'spent', 'paid', 'bought', 'cost', 'costs', 'purchase', 'purchased', 'buy',
+      'ate', 'had', 'drank', 'ordered', 'eating', 'drinking',
+      'slept', 'sleep', 'sleeping',
+      'ran', 'walked', 'exercised', 'gym', 'workout', 'jog', 'jogged', 'swam', 'jogging', 'walking', 'running',
+      'log', 'save', 'remember', 'note', 'record', 'add', 'create', 'write',
+      'work', 'worked'
+    ];
+    const hasExplicitVerb = explicitLoggingVerbs.some(verb => {
+      const regex = new RegExp(`\\b${verb}\\b`, 'i');
+      return regex.test(trimmedText);
+    });
+
+    if (intent === 'LOG' && !finalImageUrl && !hasExplicitVerb && !parsed.needs_clarification) {
+      console.log(`[serve] Programmatic Doubt-Buster triggered: No explicit logging verb in "${trimmedText}".`);
+      parsed.needs_clarification = true;
+      parsed.clarification_prompt = `I noticed you mentioned '${trimmedText}'. Did you want me to log this, or is it just a comment?`;
+    }
 
     if (parsed.delete_entry_ids) {
       parsed.delete_entry_ids = parsed.delete_entry_ids.filter((id: string) => uuidRegex.test(id));
@@ -800,11 +1053,11 @@ ${historyContext || 'No past logs found.'}`;
 
       if (conflictEntryId) {
         console.log(`[serve] Conflict intercepted programmatically: ${conflictDetails} (ID: ${conflictEntryId})`);
-        
+
         parsed.needs_clarification = true;
         parsed.update_entry_id = conflictEntryId;
         parsed.clarification_prompt = `You already logged a ${conflictDetails} for ${targetDate}. What would you like to do?`;
-        
+
         // Append Turn 1 variables to draftContext for the deterministic State Machine
         parsed.raw_text = trimmedText;
         parsed.entry_time = parsed.entry_time || new Date().toISOString();
@@ -883,6 +1136,47 @@ ${historyContext || 'No past logs found.'}`;
         draftContext: null,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
+
+    if (parsed.action === 'bulk_insert' && parsed.bulk_entries && parsed.bulk_entries.length > 0) {
+      console.log(`[serve] Direct Bulk Inserting ${parsed.bulk_entries.length} entries...`);
+      const insertRows = [];
+      for (const entry of parsed.bulk_entries) {
+        const raw = entry.raw_text || `${entry.category} entry`;
+        const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+        const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
+        const embedding = await getEmbedding(embedPayload);
+
+        insertRows.push({
+          user_id: userId,
+          raw_text: raw,
+          category: entry.category || 'other',
+          entry_time: entry.entry_time || new Date().toISOString(),
+          data: entry.data || {},
+          embedding: embedding || undefined,
+          tags: rowTags,
+          event_date: entry.event_date || null
+        });
+      }
+
+      const { data: inserted, error } = await supabaseClient
+        .from('entries')
+        .insert(insertRows)
+        .select();
+
+      if (error) {
+        console.error('[serve] Database direct bulk insert error:', error.message);
+        throw new Error(error.message);
+      }
+
+      return new Response(JSON.stringify({
+        entry: inserted[0],
+        acknowledgment: parsed.acknowledgment || `Successfully logged ${inserted.length} separate items.`,
+        needs_clarification: false,
+        draftContext: null,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+
 
     console.log('[serve] Inserting new log entry to database...');
     const { data: inserted, error } = await supabaseClient

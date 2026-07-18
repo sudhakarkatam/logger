@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { getSettings, updateSettings } from '../api';
+import { getSettings, updateSettings, testConnection, queryEntries } from '../api';
 import type { Provider, LLMSettings } from '../types';
 
 const PROVIDER_LABELS: Record<Provider, string> = {
@@ -11,21 +11,38 @@ const PROVIDER_LABELS: Record<Provider, string> = {
 };
 
 const PROVIDER_HINTS: Record<Provider, string> = {
-  gemini: 'Free tier available. Get your key at ai.google.dev',
-  groq: 'Free tier available. Get your key at console.groq.com',
-  openrouter: 'Many free models available. Get your key at openrouter.ai',
-  openai: 'Paid. Get your key at platform.openai.com',
-  anthropic: 'Paid. Get your key at console.anthropic.com',
+  gemini: 'Set GEMINI_API_KEY in your Supabase Edge Function Secrets. Models: gemini-2.0-flash, gemini-2.5-pro.',
+  groq: 'Set GROQ_API_KEY in your Supabase Edge Function Secrets. Models: llama-3.3-70b-versatile, etc.',
+  openrouter: 'Set OPENROUTER_API_KEY in your Supabase Edge Function Secrets. Allows free models.',
+  openai: 'Set OPENAI_API_KEY in your Supabase Edge Function Secrets.',
+  anthropic: 'Set ANTHROPIC_API_KEY in your Supabase Edge Function Secrets.',
+};
+
+const POPULAR_MODELS: Record<Provider, string[]> = {
+  gemini: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash-8b'],
+  groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'gemma2-9b-it', 'mixtral-8x7b-32768'],
+  openrouter: [
+    'google/gemini-2.0-flash-exp:free',
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'deepseek/deepseek-chat-v3-0324:free',
+    'qwen/qwen-2.5-72b-instruct:free',
+    'mistralai/mistral-7b-instruct:free',
+    'google/gemini-2.5-pro-exp-03-25:free',
+    'openrouter/auto',
+  ],
+  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'o4-mini'],
+  anthropic: ['claude-3-5-haiku-latest', 'claude-sonnet-4-20250514', 'claude-3-5-sonnet-latest'],
 };
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState<LLMSettings | null>(null);
   const [provider, setProvider] = useState<Provider>('gemini');
-  const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
+  const [isCustomModel, setIsCustomModel] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
-  const [showKey, setShowKey] = useState(false);
 
   // Custom Presets
   const [presetMeal, setPresetMeal] = useState('');
@@ -35,7 +52,7 @@ export default function SettingsPanel() {
   const [presetMood, setPresetMood] = useState('');
   const [presetWater, setPresetWater] = useState('');
   const [presetReminder, setPresetReminder] = useState('');
-  const [presetIdea, setPresetIdea] = useState('');
+  const [presetWork, setPresetWork] = useState('');
   const [presetBook, setPresetBook] = useState('');
   const [presetNote, setPresetNote] = useState('');
 
@@ -50,6 +67,10 @@ export default function SettingsPanel() {
       setProvider(data.provider);
       setModel(data.model);
 
+      const popularForProvider = POPULAR_MODELS[data.provider] || [];
+      const isCustom = data.model && !popularForProvider.includes(data.model);
+      setIsCustomModel(!!isCustom);
+
       const rawPresets = localStorage.getItem('life_logger_custom_presets');
       if (rawPresets) {
         const parsed = JSON.parse(rawPresets);
@@ -60,7 +81,7 @@ export default function SettingsPanel() {
         setPresetMood(parsed.mood || '');
         setPresetWater(parsed.water || '');
         setPresetReminder(parsed.reminder || '');
-        setPresetIdea(parsed.idea || '');
+        setPresetWork(parsed.work || parsed.idea || '');
         setPresetBook(parsed.book || '');
         setPresetNote(parsed.other || '');
       }
@@ -72,10 +93,97 @@ export default function SettingsPanel() {
   const handleProviderChange = (newProvider: Provider) => {
     setProvider(newProvider);
     const info = settings?.availableProviders.find(p => p.id === newProvider);
-    if (info) {
-      setModel(info.defaultModel);
+    const defaultModel = info ? info.defaultModel : '';
+    setModel(defaultModel);
+    
+    const popularForProvider = POPULAR_MODELS[newProvider] || [];
+    const isCustom = defaultModel && !popularForProvider.includes(defaultModel);
+    setIsCustomModel(!!isCustom);
+  };
+
+  const handleModelDropdownChange = (value: string) => {
+    if (value === 'custom') {
+      setIsCustomModel(true);
+    } else {
+      setIsCustomModel(false);
+      setModel(value);
     }
-    setApiKey('');
+  };
+
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setSaveMessage('⏳ Testing connection to provider...');
+    try {
+      const res = await testConnection(provider, model || undefined);
+      if (res.success) {
+        setSaveMessage(`✅ Connection successful! Model responded correctly.`);
+      } else {
+        setSaveMessage(`❌ Connection failed: ${res.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      setSaveMessage(`❌ Error: ${err.message || String(err)}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleExport = async (format: 'json' | 'csv') => {
+    try {
+      setExporting(true);
+      setSaveMessage('⏳ Preparing data export...');
+      const res = await queryEntries(undefined, 5000);
+      if (!res.data || res.data.length === 0) {
+        setSaveMessage('❌ No entries found to export.');
+        return;
+      }
+
+      let fileContent = '';
+      let mimeType = 'text/plain';
+      let fileName = 'life_logger_export';
+
+      if (format === 'json') {
+        fileContent = JSON.stringify(res.data, null, 2);
+        mimeType = 'application/json';
+        fileName += '.json';
+      } else {
+        const headers = ['id', 'entry_time', 'category', 'raw_text', 'tags', 'data'];
+        const csvRows = [headers.join(',')];
+
+        res.data.forEach((e: any) => {
+          const values = [
+            e.id,
+            e.entry_time,
+            e.category,
+            `"${(e.raw_text || '').replace(/"/g, '""')}"`,
+            `"${(e.tags || []).join(',')}"`,
+            `"${JSON.stringify(e.data || {}).replace(/"/g, '""')}"`
+          ];
+          csvRows.push(values.join(','));
+        });
+
+        fileContent = csvRows.join('\n');
+        mimeType = 'text/csv';
+        fileName += '.csv';
+      }
+
+      const blob = new Blob([fileContent], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setSaveMessage('✅ Data exported successfully!');
+      setTimeout(() => setSaveMessage(''), 3000);
+    } catch (err: any) {
+      console.error(err);
+      setSaveMessage(`❌ Export failed: ${err.message || String(err)}`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleSave = async () => {
@@ -84,7 +192,6 @@ export default function SettingsPanel() {
     try {
       await updateSettings(
         provider,
-        apiKey || undefined,
         model || undefined
       );
 
@@ -96,7 +203,7 @@ export default function SettingsPanel() {
         mood: presetMood,
         water: presetWater,
         reminder: presetReminder,
-        idea: presetIdea,
+        work: presetWork,
         book: presetBook,
         other: presetNote,
       };
@@ -111,6 +218,9 @@ export default function SettingsPanel() {
       setSaving(false);
     }
   };
+
+  const popularModels = POPULAR_MODELS[provider] || [];
+  const dropdownValue = isCustomModel ? 'custom' : model;
 
   return (
     <div className="settings-viewport">
@@ -133,55 +243,58 @@ export default function SettingsPanel() {
           <span className="form-help">{PROVIDER_HINTS[provider]}</span>
         </div>
 
-        {/* API Key */}
+        {/* Model Dropdown */}
         <div className="form-row">
-          <label className="form-label">API Key</label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <input
-              id="settings-api-key"
-              className="form-input"
-              type={showKey ? 'text' : 'password'}
-              placeholder="Paste your API key..."
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <button
-              className="form-select"
-              onClick={() => setShowKey(!showKey)}
-              title={showKey ? 'Hide' : 'Show'}
-              style={{ flexShrink: 0, cursor: 'pointer', padding: '0 12px' }}
-            >
-              {showKey ? '🙈' : '👁️'}
-            </button>
-          </div>
-          <span className="form-help">
-            Leave blank to keep existing key. 
-            {settings?.hasApiKey ? ' A key is currently configured.' : ' No key set yet.'}
-          </span>
+          <label className="form-label">Model Selection</label>
+          <select
+            className="form-select"
+            value={dropdownValue}
+            onChange={e => handleModelDropdownChange(e.target.value)}
+          >
+            {popularModels.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+            <option value="custom">✏️ Custom Model...</option>
+          </select>
+          <span className="form-help">Select from popular models or type a custom name.</span>
         </div>
 
-        {/* Model */}
-        <div className="form-row">
-          <label className="form-label">Model</label>
-          <input
-            id="settings-model"
-            className="form-input"
-            type="text"
-            value={model}
-            onChange={e => setModel(e.target.value)}
-            placeholder="Model name"
-          />
-          <span className="form-help">Default model for the selected provider. You can customize this.</span>
+        {/* Custom Model Text Input (Only visible when Custom selected) */}
+        {isCustomModel && (
+          <div className="form-row">
+            <label className="form-label">Custom Model Name</label>
+            <input
+              id="settings-model"
+              className="form-input"
+              type="text"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder="e.g. gemini-1.5-pro-latest"
+            />
+            <span className="form-help">Type the exact API model identifier string.</span>
+          </div>
+        )}
+
+        {/* Test Connection Button */}
+        <div className="form-row" style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '16px' }}>
+          <button
+            type="button"
+            className="form-select"
+            onClick={handleTestConnection}
+            disabled={testing}
+            style={{ cursor: 'pointer', padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border-dark)', background: 'var(--bg-card)', color: 'var(--text-light)', fontWeight: 500 }}
+          >
+            {testing ? '🔌 Testing...' : '🔌 Test Connection'}
+          </button>
+          <span className="form-help" style={{ margin: 0 }}>Verify if the API key secret is correctly set on your server.</span>
         </div>
+
 
         {/* Status */}
-        <div className={`status-card-box ${settings?.hasApiKey ? 'connected' : 'disconnected'}`}>
-          <span>{settings?.hasApiKey ? '🟢' : '🔴'}</span>
+        <div className="status-card-box connected" style={{ marginTop: '16px' }}>
+          <span>🟢</span>
           <span>
-            {settings?.hasApiKey
-              ? `Connected — using ${PROVIDER_LABELS[settings.provider]}`
-              : 'Not connected — configure an API key to start'}
+            Active Provider: {PROVIDER_LABELS[provider]} {model ? `(${model})` : ''}
           </span>
         </div>
 
@@ -191,9 +304,11 @@ export default function SettingsPanel() {
           className="form-submit-btn"
           onClick={handleSave}
           disabled={saving}
+          style={{ marginTop: '16px' }}
         >
           {saving ? 'Saving...' : 'Save Settings'}
         </button>
+
 
         {saveMessage && (
           <div style={{ 
@@ -290,13 +405,13 @@ export default function SettingsPanel() {
         </div>
 
         <div className="form-row">
-          <label className="form-label">Ideas Presets</label>
+          <label className="form-label">Work Presets</label>
           <input
             className="form-input"
             type="text"
-            value={presetIdea}
-            onChange={e => setPresetIdea(e.target.value)}
-            placeholder="e.g. Startup Idea, Coding Project, Design Concept"
+            value={presetWork}
+            onChange={e => setPresetWork(e.target.value)}
+            placeholder="e.g. Laptop Work, Software Dev, Meeting"
           />
         </div>
 
@@ -327,6 +442,33 @@ export default function SettingsPanel() {
           <span className="form-help" style={{ opacity: 0.6 }}>
             You can also configure via .env file. Settings saved here override .env values.
           </span>
+        </div>
+
+        {/* Data Export & Backup */}
+        <h4 className="settings-section-title" style={{ marginTop: '28px', marginBottom: '8px', color: 'var(--text-light)', borderBottom: '1px solid var(--border-dark)', paddingBottom: '4px', fontSize: '0.95rem', fontWeight: 600 }}>📊 Data Export & Backup</h4>
+        <span className="form-help" style={{ marginBottom: '16px', display: 'block', opacity: 0.8 }}>
+          Download a complete backup of all your logs. If you switch servers or want to keep a local copy, you can export your data anytime.
+        </span>
+
+        <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
+          <button
+            type="button"
+            className="form-select"
+            onClick={() => handleExport('csv')}
+            disabled={exporting}
+            style={{ cursor: 'pointer', padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border-dark)', background: 'var(--bg-card)', color: 'var(--text-light)', fontWeight: 500 }}
+          >
+            📄 Export to CSV
+          </button>
+          <button
+            type="button"
+            className="form-select"
+            onClick={() => handleExport('json')}
+            disabled={exporting}
+            style={{ cursor: 'pointer', padding: '8px 16px', borderRadius: '6px', border: '1px solid var(--border-dark)', background: 'var(--bg-card)', color: 'var(--text-light)', fontWeight: 500 }}
+          >
+            {exporting ? '⏳ Exporting...' : '⚙️ Export to JSON'}
+          </button>
         </div>
       </div>
     </div>

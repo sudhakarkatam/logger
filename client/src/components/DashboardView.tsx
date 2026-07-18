@@ -223,6 +223,44 @@ export default function DashboardView() {
 
   const { grouped, byDay, stats } = getDashboardStats(filteredEntries);
 
+  const calculateStreak = (category: string, filterFn?: (e: Entry) => boolean): number => {
+    if (!weekData || !weekData.entries) return 0;
+    
+    const dates = weekData.entries
+      .filter(e => e.category === category && (!filterFn || filterFn(e)))
+      .map(e => (e.entry_time || e.created_at || '').split('T')[0]);
+      
+    if (dates.length === 0) return 0;
+    
+    const uniqueDates = Array.from(new Set(dates)).sort((a, b) => b.localeCompare(a));
+    
+    const todayStr = new Date().toISOString().split('T')[0];
+    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    
+    const mostRecent = uniqueDates[0];
+    if (mostRecent !== todayStr && mostRecent !== yesterdayStr) {
+      return 0;
+    }
+    
+    let streak = 1;
+    let currentDate = new Date(mostRecent);
+    
+    for (let i = 1; i < uniqueDates.length; i++) {
+      const nextDate = new Date(uniqueDates[i]);
+      const diffTime = Math.abs(currentDate.getTime() - nextDate.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays === 1) {
+        streak++;
+        currentDate = nextDate;
+      } else if (diffDays > 1) {
+        break;
+      }
+    }
+    
+    return streak;
+  };
+
   // Build date range string based on queried timeframe window
   const todayObj = new Date();
   const startDateObj = new Date();
@@ -230,14 +268,18 @@ export default function DashboardView() {
   const startDate = startDateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const endDate = todayObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
+  const exerciseStreak = calculateStreak('exercise');
+  const waterStreak = calculateStreak('water');
+  const sleepStreak = calculateStreak('sleep', e => Number(e.data?.hours || 0) >= 7);
+
   return (
     <div className="dashboard-viewport">
       {/* Dashboard Header */}
-      <div className="dashboard-heading-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', marginBottom: '20px' }}>
+      <div className="dashboard-heading-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px', marginBottom: '12px' }}>
         <div>
           <h2 className="dashboard-heading">Analytics Dashboard</h2>
           <p style={{ color: '#9ca3af', fontSize: '0.85rem', marginTop: '4px' }}>
-            Period: {startDate} — {endDate} · {weekData.stats.totalEntries} events loaded
+            Period: {startDate} — {endDate} · {weekData?.stats?.totalEntries || 0} events loaded
           </p>
         </div>
         <div className="range-selector-capsule" style={{ display: 'flex', gap: '6px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', padding: '4px', borderRadius: '24px' }}>
@@ -266,6 +308,28 @@ export default function DashboardView() {
           ))}
         </div>
       </div>
+
+      {/* Streak Badges */}
+      {(exerciseStreak > 0 || waterStreak > 0 || sleepStreak > 0) && (
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '24px', animation: 'slideInUp 0.3s ease' }}>
+          {exerciseStreak > 0 && (
+            <div style={{ background: 'rgba(96, 165, 250, 0.08)', border: '1px solid rgba(96, 165, 250, 0.2)', color: 'var(--cat-exercise)', padding: '6px 12px', borderRadius: '20px', fontSize: '0.78rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+              🔥 Exercise: {exerciseStreak}-day streak!
+            </div>
+          )}
+          {waterStreak > 0 && (
+            <div style={{ background: 'rgba(56, 189, 248, 0.08)', border: '1px solid rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '6px 12px', borderRadius: '20px', fontSize: '0.78rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+              💧 Water: {waterStreak}-day streak!
+            </div>
+          )}
+          {sleepStreak > 0 && (
+            <div style={{ background: 'rgba(192, 132, 252, 0.08)', border: '1px solid rgba(192, 132, 252, 0.2)', color: 'var(--cat-sleep)', padding: '6px 12px', borderRadius: '20px', fontSize: '0.78rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}>
+              😴 Sleep &gt;7h: {sleepStreak}-day streak!
+            </div>
+          )}
+        </div>
+      )}
+
 
       {/* Filter and Search Controls Bar */}
       <div className="filter-bar" style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '24px' }}>

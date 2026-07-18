@@ -8,16 +8,6 @@ const LOCAL_SETTINGS_KEY = 'life_logger_settings';
 const DEFAULT_SETTINGS = {
   provider: import.meta.env.VITE_LLM_PROVIDER || 'gemini',
   model: import.meta.env.VITE_LLM_MODEL || '',
-  apiKey: '', // loaded dynamically via getEnvKey
-};
-
-const getEnvKey = (provider: string) => {
-  if (provider === 'gemini') return import.meta.env.VITE_GEMINI_API_KEY || '';
-  if (provider === 'groq') return import.meta.env.VITE_GROQ_API_KEY || '';
-  if (provider === 'openrouter') return import.meta.env.VITE_OPENROUTER_API_KEY || '';
-  if (provider === 'openai') return import.meta.env.VITE_OPENAI_API_KEY || '';
-  if (provider === 'anthropic') return import.meta.env.VITE_ANTHROPIC_API_KEY || '';
-  return '';
 };
 
 function getLocalSettings() {
@@ -26,22 +16,18 @@ function getLocalSettings() {
     if (raw) {
       const parsed = JSON.parse(raw);
       const provider = parsed.provider || DEFAULT_SETTINGS.provider;
-      const apiKey = parsed.apiKey || getEnvKey(provider);
       return { 
         provider, 
         model: parsed.model || DEFAULT_SETTINGS.model, 
-        apiKey 
       };
     }
   } catch (err) {
     console.error('[API] Error reading localStorage settings:', err);
   }
   
-  const defaultProvider = DEFAULT_SETTINGS.provider;
   return {
-    provider: defaultProvider,
+    provider: DEFAULT_SETTINGS.provider,
     model: DEFAULT_SETTINGS.model,
-    apiKey: getEnvKey(defaultProvider)
   };
 }
 
@@ -87,7 +73,6 @@ export async function sendMessage(text: string, userId = 1, draftContext: any = 
     imageUrl: imageUrl || 'none',
     activeProvider: config.provider,
     activeModel: config.model || 'default',
-    hasApiKey: !!config.apiKey,
     mode: mode || 'general'
   });
 
@@ -99,14 +84,15 @@ export async function sendMessage(text: string, userId = 1, draftContext: any = 
     imageUrl,
     config: {
       provider: config.provider,
-      apiKey: config.apiKey,
       model: config.model,
       mode: mode
     }
   };
 
   try {
-    const fnName = mode === 'pantry' ? 'chef' : 'message';
+    let fnName = 'message';
+    if (mode === 'chef' || mode === 'pantry') fnName = 'chef';
+    else if (mode === 'lifegpt') fnName = 'lifegpt';
     const res = await fetch(`${SUPABASE_URL}/functions/v1/${fnName}`, {
       method: 'POST',
       headers: { 
@@ -172,7 +158,6 @@ export async function getWeekData(userId = 1, days = 7, generateDigest = false):
       generateDigest,
       config: {
         provider: config.provider,
-        apiKey: config.apiKey,
         model: config.model
       }
     })
@@ -198,17 +183,15 @@ export async function getSettings(): Promise<LLMSettings> {
   return {
     provider: local.provider as any,
     model: local.model,
-    hasApiKey: !!local.apiKey,
     availableProviders
   };
 }
 
-export async function updateSettings(provider: string, apiKey?: string, model?: string): Promise<void> {
+export async function updateSettings(provider: string, model?: string): Promise<void> {
   const current = getLocalSettings();
   const next = {
     provider,
     model: model || current.model,
-    apiKey: apiKey !== undefined ? apiKey : current.apiKey
   };
   saveLocalSettings(next);
 }
@@ -306,3 +289,85 @@ export async function updatePantryItemExpiry(id: number, expiryDate: string): Pr
   });
   if (!res.ok) throw new Error(`Failed to update expiry date: ${res.statusText}`);
 }
+
+// ── Test connection to LLM using Supabase Env Secrets ──
+export async function testConnection(provider: string, model?: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/test`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      },
+      body: JSON.stringify({ provider, model })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Connection failed' }));
+      return { success: false, error: err.error || `HTTP ${res.status}` };
+    }
+    const data = await res.json();
+    return { success: data.success, error: data.error };
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
+// ── Fetch timeline entries with filters ──
+export async function getTimelineEntries(
+  userId = 1,
+  startDate?: string,
+  endDate?: string,
+  categories?: string[],
+  searchQuery?: string
+): Promise<EntriesResponse> {
+  let url = `${SUPABASE_URL}/rest/v1/entries?select=id,user_id,raw_text,category,entry_time,data,tags,created_at&order=entry_time.desc&user_id=eq.${userId}`;
+  
+  if (startDate) {
+    url += `&entry_time=gte.${startDate}`;
+  }
+  if (endDate) {
+    const endStr = endDate.includes('T') ? endDate : `${endDate}T23:59:59.999Z`;
+    url += `&entry_time=lte.${endStr}`;
+  }
+  if (categories && categories.length > 0) {
+    url += `&category=in.(${categories.join(',')})`;
+  }
+  if (searchQuery) {
+    url += `&raw_text=ilike.*${encodeURIComponent(searchQuery)}*`;
+  }
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      }
+    });
+
+    if (!res.ok) {
+      throw new Error(`Timeline query failed: ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    return { entries: data };
+  } catch (err: any) {
+    console.error('[API] Error in getTimelineEntries:', err);
+    return { entries: [] };
+  }
+}
+
+// ── Delete entry ──
+export async function deleteEntry(id: string): Promise<void> {
+  const url = `${SUPABASE_URL}/rest/v1/entries?id=eq.${id}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+    }
+  });
+  if (!res.ok) throw new Error(`Failed to delete entry: ${res.statusText}`);
+}
+
+
+

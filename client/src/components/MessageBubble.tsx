@@ -61,21 +61,50 @@ export default function MessageBubble({ message, onCardActionClick, isActiveCard
         );
       }
 
-      const formatTagsInString = (str: string): React.ReactNode[] => {
-        const tagRegex = /(#[a-zA-Z0-9\-_]+)/g;
-        const chunks: React.ReactNode[] = [];
-        const splitParts = str.split(tagRegex);
-        splitParts.forEach((part, index) => {
+      const formatLinksTagsAndText = (str: string): React.ReactNode[] => {
+        if (!str) return [];
+        const regex = /((?:#[a-zA-Z0-9\-_]+)|(?:\[[^\]]+\]\(https?:\/\/[^\s)]+\))|(?:https?:\/\/[^\s)]+))/g;
+        const splitParts = str.split(regex);
+        return splitParts.map((part, index) => {
+          if (!part) return null;
           if (part.startsWith('#')) {
-            chunks.push(<span key={`tag-${index}`} className="hashtag-badge">{part}</span>);
-          } else {
-            chunks.push(part);
+            return <span key={`tag-${index}`} className="hashtag-badge">{part}</span>;
           }
-        });
-        return chunks;
+          const mdLinkMatch = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/.exec(part);
+          if (mdLinkMatch) {
+            const [, label, url] = mdLinkMatch;
+            return (
+              <a 
+                key={`link-${index}`} 
+                href={url} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="chat-link"
+                style={{ color: '#f43f5e', textDecoration: 'underline', fontWeight: 500 }}
+              >
+                {label}
+              </a>
+            );
+          }
+          if (/^https?:\/\//.test(part)) {
+            return (
+              <a 
+                key={`raw-link-${index}`} 
+                href={part} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                className="chat-link"
+                style={{ color: '#f43f5e', textDecoration: 'underline', fontWeight: 500 }}
+              >
+                {part}
+              </a>
+            );
+          }
+          return part;
+        }).filter(Boolean) as React.ReactNode[];
       };
 
-      // Handle bold **text** and hashtags
+      // Handle bold **text**, hashtags, and links
       const parts: React.ReactNode[] = [];
       const boldRegex = /\*\*(.*?)\*\*/g;
       let lastIndex = 0;
@@ -83,14 +112,14 @@ export default function MessageBubble({ message, onCardActionClick, isActiveCard
 
       while ((match = boldRegex.exec(lineStr)) !== null) {
         if (match.index > lastIndex) {
-          parts.push(...formatTagsInString(lineStr.substring(lastIndex, match.index)));
+          parts.push(...formatLinksTagsAndText(lineStr.substring(lastIndex, match.index)));
         }
         parts.push(<strong key={match.index}>{match[1]}</strong>);
         lastIndex = boldRegex.lastIndex;
       }
 
       if (lastIndex < lineStr.length) {
-        parts.push(...formatTagsInString(lineStr.substring(lastIndex)));
+        parts.push(...formatLinksTagsAndText(lineStr.substring(lastIndex)));
       }
 
       return parts;

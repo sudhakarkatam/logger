@@ -1,7 +1,44 @@
 import { useState, useRef, useEffect } from 'react';
-import { sendMessage, getSettings, uploadMedia, queryEntries } from '../api';
+import { sendMessage, getSettings, updateSettings, uploadMedia, queryEntries, deleteEntry } from '../api';
 import type { ChatMessage } from '../types';
 import MessageBubble from './MessageBubble';
+
+const QUICK_MODELS: Record<string, { id: string; label: string; free: boolean }[]> = {
+  groq: [
+    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', free: true },
+    { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', free: true },
+    { id: 'gemma2-9b-it', label: 'Gemma 2 9B', free: true },
+    { id: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', free: true },
+  ],
+  gemini: [
+    { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', free: true },
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', free: true },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', free: false },
+  ],
+  openrouter: [
+    { id: 'google/gemini-2.0-flash-exp:free', label: 'Gemini 2.0 Flash', free: true },
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B', free: true },
+    { id: 'deepseek/deepseek-chat-v3-0324:free', label: 'DeepSeek V3', free: true },
+    { id: 'qwen/qwen-2.5-72b-instruct:free', label: 'Qwen 2.5 72B', free: true },
+    { id: 'mistralai/mistral-7b-instruct:free', label: 'Mistral 7B', free: true },
+  ],
+  openai: [
+    { id: 'gpt-4o-mini', label: 'GPT-4o Mini', free: false },
+    { id: 'gpt-4o', label: 'GPT-4o', free: false },
+  ],
+  anthropic: [
+    { id: 'claude-3-5-haiku-latest', label: 'Claude Haiku', free: false },
+    { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', free: false },
+  ],
+};
+
+const PROVIDER_DISPLAY: Record<string, string> = {
+  groq: 'Groq',
+  gemini: 'Gemini',
+  openrouter: 'OpenRouter',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
 
 const CATEGORY_CHIPS = [
   { category: 'meal', prefix: 'log meal: ', label: '🍲 Meals' },
@@ -11,20 +48,20 @@ const CATEGORY_CHIPS = [
   { category: 'mood', prefix: 'log mood: ', label: '🧠 Mood' },
   { category: 'water', prefix: 'log water: ', label: '💧 Water' },
   { category: 'reminder', prefix: 'log reminder: ', label: '⏰ Reminders' },
-  { category: 'idea', prefix: 'log idea: ', label: '💡 Ideas' },
+  { category: 'work', prefix: 'log work: ', label: '💻 Work' },
   { category: 'book', prefix: 'log book: ', label: '📚 Books' },
   { category: 'other', prefix: 'log note: ', label: '💡 Notes' },
 ];
 
 const DEFAULT_PRESETS: Record<string, string[]> = {
-  meal: ['Oats & Coffee ☕', 'Lunch Salad 🥗', 'Dinner Rice 🍛'],
-  expense: ['Coffee ☕', 'Groceries 🛒', 'Uber 🚗'],
+  meal: ['Idli Dosa ☕', 'Rice & Dal 🍛', 'Biryani 🍗'],
+  expense: ['Tea & Snacks ☕', 'Groceries 🛒', 'Auto/Uber 🚗'],
   sleep: ['7h Sleep 🛌', '8h Restful Sleep 😴', '6h Tired Sleep 🥱'],
   exercise: ['5K Run 🏃', 'Gym Workout 🏋️', 'Walk 🚶'],
   mood: ['Happy 😊', 'Energetic 💪', 'Tired 🥱'],
   water: ['500ml Water 💧', '1L Bottle 🥛', 'Glass of Water 🥤'],
   reminder: ['Drink Water 💧', 'Take Meds 💊', 'Call Mom 📞'],
-  idea: ['Startup Idea 💡', 'Coding Project 💻', 'Design Concept 🎨'],
+  work: ['Laptop Work 💻', 'Software Dev ⚙️', 'Meeting 📅'],
   book: ['Finished Chapter 📖', 'Started New Book 📚', 'Audiobook Session 🎧'],
   other: ['Study 📚', 'Water Plants 🪴', 'Read Book 📖']
 };
@@ -39,7 +76,12 @@ export default function ChatView() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
   
-  const [chefMode, setChefMode] = useState(false);
+  const [chatMode, setChatMode] = useState<'normal' | 'chef' | 'lifegpt'>('normal');
+  const [lastLoggedEntry, setLastLoggedEntry] = useState<any | null>(null);
+  const [showUndoToast, setShowUndoToast] = useState(false);
+
+  // Model Picker State
+  const [showModelPicker, setShowModelPicker] = useState(false);
 
   // Custom Presets & Shortcuts States
   const [dbEntries, setDbEntries] = useState<any[]>([]);
@@ -50,6 +92,7 @@ export default function ChatView() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   // Helper to place cursor at the far right/end of input
   const focusInputAtEnd = (customValue?: string) => {
@@ -122,9 +165,9 @@ export default function ChatView() {
           } else if (category === 'reminder') {
             val = e.data?.reminder_text || e.raw_text || '';
             val = val.replace(/^log reminder:\s*/i, '');
-          } else if (category === 'idea') {
-            val = e.data?.idea_text || e.raw_text || '';
-            val = val.replace(/^log idea:\s*/i, '');
+          } else if (category === 'work') {
+            val = e.data?.work_text || e.data?.description || e.raw_text || '';
+            val = val.replace(/^log work:\s*/i, '');
           } else if (category === 'book') {
             val = e.data?.book || e.data?.title || e.raw_text || '';
             val = val.toString().replace(/^log book:\s*/i, '');
@@ -169,7 +212,7 @@ export default function ChatView() {
     if (text.startsWith('log mood:')) return 'mood';
     if (text.startsWith('log water:')) return 'water';
     if (text.startsWith('log reminder:')) return 'reminder';
-    if (text.startsWith('log idea:')) return 'idea';
+    if (text.startsWith('log work:')) return 'work';
     if (text.startsWith('log book:')) return 'book';
     if (text.startsWith('log note:')) return 'other';
     return null;
@@ -188,18 +231,33 @@ export default function ChatView() {
   const loadActiveModel = async () => {
     try {
       const data = await getSettings();
-      const labels: Record<string, string> = {
-        gemini: 'Gemini Flash',
-        groq: 'Llama 3.3 (Groq)',
-        openrouter: 'OpenRouter Free',
-        openai: 'GPT-4o Mini',
-        anthropic: 'Claude Haiku',
-      };
-      setActiveModel(labels[data.provider] || data.model || 'LLM Engine');
+      // Build display label from actual model name
+      const shortModel = data.model?.split('/').pop()?.split(':')[0] || '';
+      const providerLabel = PROVIDER_DISPLAY[data.provider] || data.provider;
+      setActiveModel(shortModel ? `${shortModel} (${providerLabel})` : providerLabel);
     } catch (err) {
       console.error(err);
     }
   };
+
+  const handleQuickModelSwitch = async (providerId: string, modelId: string) => {
+    await updateSettings(providerId, modelId);
+    const shortModel = modelId.split('/').pop()?.split(':')[0] || modelId;
+    const providerLabel = PROVIDER_DISPLAY[providerId] || providerId;
+    setActiveModel(`${shortModel} (${providerLabel})`);
+    setShowModelPicker(false);
+  };
+
+  // Click outside to close model picker
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setShowModelPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -244,7 +302,7 @@ export default function ChatView() {
     setMessages(prev => [...prev, userMsg]);
     setIsLoading(true);
 
-    const historyPayload = messages.map(m => ({
+    const historyPayload = messages.slice(-10).map(m => ({
       role: m.type === 'user' ? 'user' : 'assistant',
       content: m.text
     }));
@@ -299,7 +357,7 @@ export default function ChatView() {
     setInput('');
     setIsLoading(true);
 
-    const historyPayload = messages.map(m => ({
+    const historyPayload = messages.slice(-10).map(m => ({
       role: m.type === 'user' ? 'user' : 'assistant',
       content: m.text
     }));
@@ -324,7 +382,14 @@ export default function ChatView() {
         removeSelectedFile();
       }
 
-      const response = await sendMessage(finalMsgText || '📷 Sent a photo', 1, draftContext, historyPayload, imageUrl, chefMode ? 'pantry' : 'general');
+      const response = await sendMessage(
+        finalMsgText || '📷 Sent a photo', 
+        1, 
+        draftContext, 
+        historyPayload, 
+        imageUrl, 
+        chatMode === 'chef' ? 'pantry' : chatMode === 'lifegpt' ? 'lifegpt' : 'general'
+      );
 
       if (response.needs_clarification) {
         setDraftContext(response.draftContext);
@@ -343,6 +408,18 @@ export default function ChatView() {
         interactiveCard: response.interactiveCard || null
       };
       setMessages(prev => [...prev, systemMsg]);
+      
+      if (response.entry) {
+        setLastLoggedEntry(response.entry);
+        setShowUndoToast(true);
+        // Auto hide toast after 6 seconds
+        setTimeout(() => {
+          setShowUndoToast(false);
+        }, 6000);
+      } else {
+        setShowUndoToast(false);
+      }
+      
       loadDbEntries(); // dynamically update local presets cache
     } catch (error) {
       const errorMsg: ChatMessage = {
@@ -355,6 +432,21 @@ export default function ChatView() {
     } finally {
       setIsLoading(false);
       setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!lastLoggedEntry) return;
+    try {
+      await deleteEntry(lastLoggedEntry.id);
+      // Remove last 2 messages (user message + system acknowledgment)
+      setMessages(prev => prev.slice(0, -2));
+      setLastLoggedEntry(null);
+      setShowUndoToast(false);
+      loadDbEntries();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to undo last log.');
     }
   };
 
@@ -433,9 +525,9 @@ export default function ChatView() {
   // Get greeting text based on local time
   const getGreeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return 'Morning, Sudhakar';
-    if (hour < 17) return 'Afternoon, Sudhakar';
-    return 'Evening, Sudhakar';
+    if (hour < 12) return 'Morning, Buddy';
+    if (hour < 17) return 'Afternoon, Buddy';
+    return 'Evening, Buddy';
   };
 
   return (
@@ -504,9 +596,11 @@ export default function ChatView() {
                 id="chat-input"
                 className="chat-text-input"
                 placeholder={
-                  chefMode
+                  chatMode === 'chef'
                     ? "Ask Chef: what to cook, list ingredients, or save a recipe..."
-                    : "Type what you did or upload a photo..."
+                    : chatMode === 'lifegpt'
+                      ? "Ask Life GPT Coach: How has my productivity changed? Why am I feeling tired?..."
+                      : "Type what you did or upload a photo..."
                 }
                 value={input}
                 onChange={e => handleInputChange(e.target.value)}
@@ -526,13 +620,15 @@ export default function ChatView() {
                   >
                     {isListening ? '🛑' : '🎙️'}
                   </button>
+                  
+                  {/* Chef Mode Toggle */}
                   <button
                     type="button"
-                    onClick={() => setChefMode(prev => !prev)}
-                    title={chefMode ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
+                    onClick={() => setChatMode(prev => prev === 'chef' ? 'normal' : 'chef')}
+                    title={chatMode === 'chef' ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
                     style={{
-                      background: chefMode ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
-                      border: chefMode ? '1px solid var(--brand-orange)' : 'none',
+                      background: chatMode === 'chef' ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
+                      border: chatMode === 'chef' ? '1px solid #ff914d' : 'none',
                       padding: '4px 8px',
                       borderRadius: '6px',
                       fontSize: '0.85rem',
@@ -540,17 +636,66 @@ export default function ChatView() {
                       display: 'flex',
                       alignItems: 'center',
                       gap: '4px',
-                      color: chefMode ? 'var(--brand-orange)' : 'var(--text-muted)',
+                      color: chatMode === 'chef' ? '#ff914d' : 'var(--text-muted)',
                       transition: 'all var(--transition-fast)'
                     }}
                   >
-                    🍲 {chefMode ? 'Chef Mode' : 'Chef'}
+                    🍲 Chef
+                  </button>
+
+                  {/* Life GPT Mode Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setChatMode(prev => prev === 'lifegpt' ? 'normal' : 'lifegpt')}
+                    title={chatMode === 'lifegpt' ? "Deactivate Life GPT Mode" : "Activate Life GPT AI Coach"}
+                    style={{
+                      background: chatMode === 'lifegpt' ? 'rgba(192, 132, 252, 0.15)' : 'transparent',
+                      border: chatMode === 'lifegpt' ? '1px solid #c084fc' : 'none',
+                      padding: '4px 8px',
+                      borderRadius: '6px',
+                      fontSize: '0.85rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      color: chatMode === 'lifegpt' ? '#c084fc' : 'var(--text-muted)',
+                      transition: 'all var(--transition-fast)'
+                    }}
+                  >
+                    🧠 Coach
                   </button>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-dark)', fontWeight: 500 }}>
-                    {activeModel}
-                  </span>
+                  <div ref={modelPickerRef} style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      className="model-picker-btn"
+                      onClick={() => setShowModelPicker(!showModelPicker)}
+                      title="Change Model & Provider"
+                    >
+                      {activeModel} ▾
+                    </button>
+                    {showModelPicker && (
+                      <div className="model-picker-dropdown">
+                        {Object.entries(QUICK_MODELS).map(([providerId, models]) => (
+                          <div key={providerId} className="model-picker-group">
+                            <div className="model-picker-group-label">{PROVIDER_DISPLAY[providerId] || providerId}</div>
+                            {models.map(m => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                className="model-picker-item"
+                                onClick={() => handleQuickModelSwitch(providerId, m.id)}
+                              >
+                                <span>{m.label}</span>
+                                {m.free && <span className="model-picker-free-badge">FREE</span>}
+                              </button>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <button
                     id="btn-send"
                     className="send-dock-btn"
@@ -669,11 +814,13 @@ export default function ChatView() {
               id="chat-input"
               className="chat-text-input"
               placeholder={
-                chefMode
+                chatMode === 'chef'
                   ? "Ask Chef: what to cook, list ingredients, or save a recipe..."
-                  : draftContext 
-                    ? "Provide clarification requested above..." 
-                    : "Ate oats for breakfast, spent 150 on groceries..."
+                  : chatMode === 'lifegpt'
+                    ? "Ask Life GPT Coach: How has my productivity changed? Why am I feeling tired?..."
+                    : draftContext 
+                      ? "Provide clarification requested above..." 
+                      : "Ate oats for breakfast, spent 150 on groceries..."
               }
               value={input}
               onChange={e => handleInputChange(e.target.value)}
@@ -693,13 +840,15 @@ export default function ChatView() {
                 >
                   {isListening ? '🛑' : '🎙️'}
                 </button>
+                
+                {/* Chef Mode Toggle */}
                 <button
                   type="button"
-                  onClick={() => setChefMode(prev => !prev)}
-                  title={chefMode ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
+                  onClick={() => setChatMode(prev => prev === 'chef' ? 'normal' : 'chef')}
+                  title={chatMode === 'chef' ? "Deactivate Chef Mode" : "Activate Chef & Pantry Mode"}
                   style={{
-                    background: chefMode ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
-                    border: chefMode ? '1px solid var(--brand-orange)' : 'none',
+                    background: chatMode === 'chef' ? 'rgba(255, 145, 77, 0.15)' : 'transparent',
+                    border: chatMode === 'chef' ? '1px solid #ff914d' : 'none',
                     padding: '4px 8px',
                     borderRadius: '6px',
                     fontSize: '0.85rem',
@@ -707,17 +856,66 @@ export default function ChatView() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '4px',
-                    color: chefMode ? 'var(--brand-orange)' : 'var(--text-muted)',
+                    color: chatMode === 'chef' ? '#ff914d' : 'var(--text-muted)',
                     transition: 'all var(--transition-fast)'
                   }}
                 >
-                  🍲 {chefMode ? 'Chef Mode' : 'Chef'}
+                  🍲 Chef
+                </button>
+
+                {/* Life GPT Mode Toggle */}
+                <button
+                  type="button"
+                  onClick={() => setChatMode(prev => prev === 'lifegpt' ? 'normal' : 'lifegpt')}
+                  title={chatMode === 'lifegpt' ? "Deactivate Life GPT Mode" : "Activate Life GPT AI Coach"}
+                  style={{
+                    background: chatMode === 'lifegpt' ? 'rgba(192, 132, 252, 0.15)' : 'transparent',
+                    border: chatMode === 'lifegpt' ? '1px solid #c084fc' : 'none',
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    color: chatMode === 'lifegpt' ? '#c084fc' : 'var(--text-muted)',
+                    transition: 'all var(--transition-fast)'
+                  }}
+                >
+                  🧠 Coach
                 </button>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '0.78rem', color: 'var(--text-dark)', fontWeight: 500 }}>
-                  {activeModel}
-                </span>
+                <div ref={modelPickerRef} style={{ position: 'relative' }}>
+                  <button
+                    type="button"
+                    className="model-picker-btn"
+                    onClick={() => setShowModelPicker(!showModelPicker)}
+                    title="Change Model & Provider"
+                  >
+                    {activeModel} ▾
+                  </button>
+                  {showModelPicker && (
+                    <div className="model-picker-dropdown">
+                      {Object.entries(QUICK_MODELS).map(([providerId, models]) => (
+                        <div key={providerId} className="model-picker-group">
+                          <div className="model-picker-group-label">{PROVIDER_DISPLAY[providerId] || providerId}</div>
+                          {models.map(m => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              className="model-picker-item"
+                              onClick={() => handleQuickModelSwitch(providerId, m.id)}
+                            >
+                              <span>{m.label}</span>
+                              {m.free && <span className="model-picker-free-badge">FREE</span>}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   id="btn-send"
                   className="send-dock-btn"
@@ -730,6 +928,58 @@ export default function ChatView() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+      {showUndoToast && lastLoggedEntry && (
+        <div style={{
+          position: 'fixed',
+          bottom: '80px',
+          right: '20px',
+          zIndex: 1000,
+          background: 'var(--bg-capsule)',
+          border: '1px solid var(--border-active)',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          animation: 'slideInUp 0.2s ease',
+          minWidth: '280px'
+        }}>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            📝 Logged: <strong style={{ textTransform: 'capitalize' }}>{lastLoggedEntry.category}</strong>
+          </span>
+          <button
+            onClick={handleUndo}
+            style={{
+              marginLeft: 'auto',
+              background: 'rgba(248, 113, 113, 0.12)',
+              border: '1px solid rgba(248, 113, 113, 0.25)',
+              color: 'var(--cat-expense)',
+              padding: '5px 10px',
+              borderRadius: '6px',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            ↩️ Undo
+          </button>
+          <button
+            onClick={() => setShowUndoToast(false)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-dark)',
+              cursor: 'pointer',
+              fontSize: '0.9rem',
+              padding: '0 4px'
+            }}
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>
