@@ -545,12 +545,7 @@ export default function ChatView() {
       <div className="chat-scroller">
         {messages.length === 0 ? (
           <div className="chat-hero">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#d97706', marginBottom: '20px', opacity: 0.9 }}>
-              <line x1="12" y1="2" x2="12" y2="22" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-              <line x1="4.93" y1="19.07" x2="19.07" y2="4.93" />
-            </svg>
+            <div style={{ fontSize: '2.4rem', marginBottom: '16px' }}>❤️</div>
             <h2 className="chat-hero-title">
               {getGreeting()}
             </h2>
@@ -933,50 +928,87 @@ export default function ChatView() {
       {showUndoToast && lastLoggedEntry && (
         <div style={{
           position: 'fixed',
-          bottom: '80px',
-          right: '20px',
+          top: '24px',
+          right: '24px',
           zIndex: 1000,
-          background: 'var(--bg-capsule)',
-          border: '1px solid var(--border-active)',
-          borderRadius: '8px',
-          padding: '12px 16px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          background: 'rgba(18, 18, 22, 0.92)',
+          backdropFilter: 'blur(16px)',
+          WebkitBackdropFilter: 'blur(16px)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
+          borderRadius: '9999px',
+          padding: '8px 16px 8px 18px',
+          boxShadow: '0 12px 32px -4px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05)',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
-          animation: 'slideInUp 0.2s ease',
-          minWidth: '280px'
+          gap: '14px',
+          animation: 'slideInUp 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          whiteSpace: 'nowrap'
         }}>
-          <span style={{ fontSize: '0.85rem', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            📝 Logged: <strong style={{ textTransform: 'capitalize' }}>{lastLoggedEntry.category}</strong>
+          <span style={{ fontSize: '0.82rem', color: '#a1a1aa', display: 'flex', alignItems: 'center', gap: '7px', fontWeight: 500 }}>
+            <span style={{ fontSize: '1rem' }}>
+              {lastLoggedEntry.category === 'meal' ? '🍲' :
+               lastLoggedEntry.category === 'sleep' ? '😴' :
+               lastLoggedEntry.category === 'expense' ? '💳' :
+               lastLoggedEntry.category === 'exercise' ? '🏃' :
+               lastLoggedEntry.category === 'work' ? '💻' :
+               lastLoggedEntry.category === 'mood' ? '🧠' : '✨'}
+            </span>
+            <span>Logged:</span>
+            <strong style={{ textTransform: 'capitalize', color: '#f4f4f5', fontWeight: 600 }}>{lastLoggedEntry.category}</strong>
           </span>
+
+          <div style={{ height: '14px', width: '1px', background: 'rgba(255, 255, 255, 0.15)' }} />
+
           <button
             onClick={handleUndo}
             style={{
-              marginLeft: 'auto',
-              background: 'rgba(248, 113, 113, 0.12)',
-              border: '1px solid rgba(248, 113, 113, 0.25)',
-              color: 'var(--cat-expense)',
-              padding: '5px 10px',
-              borderRadius: '6px',
-              fontSize: '0.78rem',
+              background: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: '#f87171',
+              padding: '4px 12px',
+              borderRadius: '9999px',
+              fontSize: '0.75rem',
               fontWeight: 600,
               cursor: 'pointer',
-              transition: 'all 0.2s ease'
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+              e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.3)';
             }}
           >
-            ↩️ Undo
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 7v6h6"/>
+              <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/>
+            </svg>
+            <span>Undo</span>
           </button>
+
           <button
             onClick={() => setShowUndoToast(false)}
             style={{
               background: 'none',
               border: 'none',
-              color: 'var(--text-dark)',
+              color: '#71717a',
               cursor: 'pointer',
-              fontSize: '0.9rem',
-              padding: '0 4px'
+              fontSize: '0.85rem',
+              padding: '2px 4px',
+              borderRadius: '50%',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'color 0.15s ease'
             }}
+            onMouseEnter={(e) => e.currentTarget.style.color = '#f4f4f5'}
+            onMouseLeave={(e) => e.currentTarget.style.color = '#71717a'}
+            title="Dismiss"
           >
             ✕
           </button>

@@ -163,16 +163,32 @@ async function getEmbedding(text: string): Promise<number[] | null> {
   }
 }
 
+const timezone = 'Asia/Kolkata';
+
+function getIndianDateStr(dateInput?: Date | string): string {
+  const d = dateInput ? new Date(dateInput) : new Date();
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const parts = formatter.formatToParts(d);
+  const year = parts.find(p => p.type === 'year')?.value;
+  const month = parts.find(p => p.type === 'month')?.value;
+  const day = parts.find(p => p.type === 'day')?.value;
+  return `${year}-${month}-${day}`;
+}
+
 // ── Prompt Builders ──
 
-function buildSystemPrompt(timezone: string): string {
+function buildSystemPrompt(timezoneStr: string): string {
+  const indianDate = getIndianDateStr();
+  const indianTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+
   return `You are Buddy, the user's friendly personal AI companion. Parse the user's message into structured JSON.
 User Name: Sudhakar (call him Buddy or Boss in your acknowledgment).
 Location: South India.
-Tone: Warm, conversational, humorous, witty, and friendly. Chat like a funny roommate and supportive close friend!
-Emoji Rule (STRICT): Use at most ONE single emoji per sentence (e.g. 🥞 or ☕). NEVER stack or group multiple emojis together (e.g. NEVER write 🍕👀💆‍♀️ or 🥳🕺). Keep emoji usage clean and tasteful. Respond strictly and 100% in clean, fluent English ONLY.
-Timezone: ${timezone}
-Current Time: ${new Date().toLocaleString('en-US', { timeZone: timezone })}
+Timezone: Asia/Kolkata (Indian Standard Time - IST).
+Current Indian Date: ${indianDate}
+Current Indian Time (IST): ${indianTime}
+Tone: Clean, articulate, warm, supportive, and friendly. Chat like a thoughtful close friend.
+Emoji & Greeting Rule (STRICT): NEVER attach any emojis to the word Buddy or greetings (e.g. NEVER write '🤙 Buddy', 'Hey Buddy 🤙', 'Buddy 🫂', or 'Boss 🥞'). Do NOT use tacky or excessive emojis. Respond strictly in 100% clean, fluent English ONLY.
 
 Return ONLY a JSON object:
 {
@@ -180,7 +196,7 @@ Return ONLY a JSON object:
   "entry_time": ISO 8601 datetime string,
   "data": category-specific fields,
   "tags": string[] or null,
-  "acknowledgment": "friendly reply confirmation",
+  "acknowledgment": "A warm, articulate, supportive 1-2 sentence companion reply. It MUST confirm what was logged AND include a personalized, encouraging comment or wish tailored to the content (e.g. for tired/sad mood: offer empathy and wish rest; for exercise: encourage staying active; for meals: wish a good day; for expenses/work: validate effort/value). NEVER use plain, robotic system notifications like 'Logged 1 entry' or 'I have logged your mood'. Speak like a caring friend.",
   "needs_clarification": boolean,
   "clarification_prompt": string or null,
   "action": "insert" | "update" | "delete" | "cancel" | "bulk_insert",
@@ -267,23 +283,18 @@ Strict Rules:
    - Instead, set "needs_clarification": true.
    - Set "clarification_prompt": "I noticed you said '[user text]'. Did you want me to log this as a reminder/note, or is it just a comment?"
 
-8. Compound Logging & Multi-Item Splits (CRITICAL - MUST FOLLOW):
-   - If the user mentions MULTIPLE distinct loggable items in a SINGLE message, you MUST NOT combine them into one entry.
-   - This applies to:
-     a) Multiple expenses: "750 for wifi bill and 180 for lunch starters" → 2 expense entries
-     b) Multiple meal types: "had poori for breakfast, rice for lunch, chapati for dinner" → 3 separate meal entries (one per meal_type)
-     c) Mixed categories: "had dosa for breakfast, spent 200 on uber, slept 7 hours" → 3 entries (meal + expense + sleep)
-     d) Any combination of the above
-   - For ALL these cases, set "action": "bulk_insert" and populate "bulk_entries" array with one entry per distinct log.
-   - Each bulk_entries item MUST have its own "category", "entry_time", "data" (with correct category-specific fields), and "raw_text".
-   - For meals specifically: each meal type (breakfast/lunch/dinner/snack) is a SEPARATE entry with its own nutrition estimates.
-   - The acknowledgment should list everything in a friendly, witty way: "Logged breakfast (dosa), ₹200 uber expense, and 7h sleep separately! 🍲💳😴"
-   - NEVER merge multiple meal types or mixed categories into a single entry. breakfast ≠ lunch ≠ dinner ≠ snack.
+8. Compound Logging & Multi-Item / Multi-Day Splits (CRITICAL - MUST FOLLOW):
+   - If the user mentions MULTIPLE distinct loggable items, mixed categories, multiple meals, or a MULTI-DAY time span in a single message, you MUST NOT combine them into a single entry OR drop any item.
+   - You MUST extract EVERY SINGLE ITEM, meal type, and date mentioned and place them in the 'bulk_entries' array:
+     a) Multi-Day & Multi-Meal Spans: If a user specifies meals across different days or times (e.g. "yesterday morning I ate oat meals for breakfast and lunch is skipped and dinner rice and dal, on july 24 breakfast is poori..."), you MUST output a separate object in 'bulk_entries' for EVERY single meal/skipped item across each date!
+     b) Date Calculation Precision: Compare relative day words like "yesterday", "today", "tomorrow" strictly against Current Indian Date (${indianDate}). For example, if Current Date is 2026-07-26, "yesterday" MUST resolve to 2026-07-25. "july 24" MUST resolve to 2026-07-24.
+     c) Skipped Meals: If the user says a meal was skipped (e.g. "lunch is skipped"), create a meal entry with category "meal", data { "meal_type": "lunch", "skipped": true, "items": [] }, and include it in 'bulk_entries'.
+   - Execution Format: Set "action": "bulk_insert" and populate 'bulk_entries' with every single parsed item and date.
+   - NEVER drop, skip, or ignore any meal type or date mentioned in the user's message!
 
 9. Ambiguous Logging Verification (CRITICAL Doubt-Buster):
-   - If a message contains data (numbers, metrics, foods, expenses, sleep hours) but DOES NOT use an explicit action or logging verb (such as "spent", "paid", "log", "remember", "save", "ate", "had", "slept", "ran", "walked"), you MUST NOT save it directly in the first turn.
-   - Instead, you MUST flag it for confirmation: set "needs_clarification": true, set "clarification_prompt" to a confirmation question (e.g. "I noticed you mentioned '[raw text]'. Did you want me to log this, or is it just a comment?"), and save the parsed log in the "draftContext" (with correct action e.g. "insert" or "bulk_insert").
-   - You are ONLY allowed to save directly in the first turn if the user explicitly uses one of the logging action verbs (e.g. "spent 50 on banana", "log 6 hours sleep", "had oats for breakfast").`;
+   - If a message contains data (numbers, metrics, foods, expenses, sleep hours) but DOES NOT use an explicit action or logging verb AND has no units/category context, you MAY ask for confirmation.
+   - However, if the user provides metrics with units (e.g. "8 hours per day", "₹500", "3km", "4h work") or answers a clarification prompt, do NOT ask for confirmation—log it directly!`;
 }
 
 serve(async (req) => {
@@ -321,6 +332,119 @@ serve(async (req) => {
 
     // ── DETERMINISTIC CONFIRMATION STATE MACHINE ──
     if (draftContext) {
+      // 0. Generic Multi-Turn Slot Filling Intercept
+      let isSlotFill = false;
+      let slotFillPayload: any = null;
+
+      try {
+        const slotFillPrompt = `You are a conversation state assistant for Buddy AI.
+The user was previously asked a clarification or follow-up question: "${draftContext.clarification_prompt || 'Can you provide details?'}"
+Pending Draft Context: ${JSON.stringify(draftContext)}
+Current Calendar Date (IST): ${getIndianDateStr()}
+
+User replied: "${trimmedText}"
+
+Determine if the user's reply is answering the question, providing missing details (e.g. number of hours, amount, meal items, project/work details, exercise mins, multi-day span, or log confirmation), or instructing to log the data for ANY category.
+
+Return ONLY a JSON object:
+{
+  "is_slot_fill": boolean,
+  "action": "insert" | "bulk_insert" | "update" | "delete" | "cancel" | null,
+  "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other" | null,
+  "data": object | null,
+  "entry_time": ISO 8601 string or null,
+  "event_date": "YYYY-MM-DD" or null,
+  "bulk_entries": [
+    {
+      "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
+      "entry_time": ISO 8601 string,
+      "data": object,
+      "raw_text": string
+    }
+  ] | null,
+  "acknowledgment": "A warm, articulate, supportive 1-2 sentence companion reply. Confirm what was logged AND include a personalized encouraging comment or wish. Speak like a caring close friend." | null
+}
+If is_slot_fill is true, merge the new information from user's reply with draftContext. If the user specifies a multi-day span (e.g. "for past 3 days", "every day"), populate bulk_entries with separate items for each day. Otherwise set is_slot_fill to false.`;
+
+        const slotResText = await callLLM(config, slotFillPrompt, trimmedText);
+        let cleanedSlotRes = slotResText.trim();
+        const slotJsonMatch = cleanedSlotRes.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (slotJsonMatch) cleanedSlotRes = slotJsonMatch[1].trim();
+        const jsonMatchObj = cleanedSlotRes.match(/\{[\s\S]*?\}/);
+        if (jsonMatchObj) cleanedSlotRes = jsonMatchObj[0];
+
+        const slotParsed = JSON.parse(cleanedSlotRes);
+        if (slotParsed && slotParsed.is_slot_fill) {
+          isSlotFill = true;
+          slotFillPayload = slotParsed;
+          console.log('[serve] State Machine: Generic Slot-Filling detected!', JSON.stringify(slotFillPayload));
+        }
+      } catch (err) {
+        console.warn('[serve] Slot-filling evaluation failed:', err);
+      }
+
+      if (isSlotFill && slotFillPayload) {
+        const action = slotFillPayload.action || draftContext.action || 'insert';
+        if (action === 'bulk_insert' && slotFillPayload.bulk_entries && slotFillPayload.bulk_entries.length > 0) {
+          const insertRows = [];
+          for (const entry of slotFillPayload.bulk_entries) {
+            const raw = entry.raw_text || `${entry.category} entry`;
+            const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+            const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
+            const emb = await getEmbedding(embedPayload);
+
+            insertRows.push({
+              user_id: userId,
+              raw_text: raw,
+              category: entry.category || draftContext.category || 'other',
+              entry_time: entry.entry_time || new Date().toISOString(),
+              data: entry.data || {},
+              embedding: emb || undefined,
+              tags: rowTags,
+              event_date: entry.event_date || slotFillPayload.event_date || null
+            });
+          }
+
+          const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
+          if (error) throw new Error(error.message);
+
+          return new Response(JSON.stringify({
+            entry: inserted[0],
+            acknowledgment: slotFillPayload.acknowledgment || `Successfully logged ${inserted.length} entries!`,
+            needs_clarification: false,
+            draftContext: null,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        } else {
+          const category = slotFillPayload.category || draftContext.category || 'other';
+          const dataPayload = slotFillPayload.data || draftContext.data || {};
+          const rawText = trimmedText || draftContext.raw_text || `${category} log`;
+          const rowTags = (rawText.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
+          const embedPayload = `${category}: ${rawText} - Data: ${JSON.stringify(dataPayload)}`;
+          const emb = await getEmbedding(embedPayload);
+
+          const insertPayload: any = {
+            user_id: userId,
+            raw_text: rawText,
+            category,
+            entry_time: slotFillPayload.entry_time || draftContext.entry_time || new Date().toISOString(),
+            data: dataPayload,
+            tags: rowTags,
+            event_date: slotFillPayload.event_date || draftContext.event_date || null
+          };
+          if (emb) insertPayload.embedding = emb;
+
+          const { data: inserted, error } = await supabaseClient.from('entries').insert([insertPayload]).select();
+          if (error) throw new Error(error.message);
+
+          return new Response(JSON.stringify({
+            entry: inserted[0],
+            acknowledgment: slotFillPayload.acknowledgment || `Successfully logged your ${category} entry!`,
+            needs_clarification: false,
+            draftContext: null,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+      }
+
       let isConfirm = false;
       let isAccumulate = false;
       let isCancel = false;
@@ -618,7 +742,7 @@ Return ONLY one of these strings: 'accumulate', 'confirm', 'keep_both', 'cancel'
       console.log('[serve] State Machine ignored. User typed a new logging/query instruction.');
     }
 
-    // 1. Intent Detection (LOG vs. QUERY)
+    // 1. Intent Detection (LOG vs. QUERY vs. CHAT)
     let intent = 'LOG';
 
     if (finalImageUrl) {
@@ -626,42 +750,54 @@ Return ONLY one of these strings: 'accumulate', 'confirm', 'keep_both', 'cancel'
     } else {
       const lowerText = trimmedText.toLowerCase();
       const forceLogKeywords = ['log this message', 'log this', 'remember this', 'remember to', 'save this', 'remind me to', 'note down', 'note this', 'log it', 'remember it'];
-      const hasForceLogKeyword = forceLogKeywords.some(kw => lowerText.includes(kw));
+      const isExplicitLogPrefix = lowerText.startsWith('log ') || lowerText.startsWith('log for ') || lowerText.startsWith('log note:') || lowerText.startsWith('log meal:') || lowerText.startsWith('log sleep:') || lowerText.startsWith('log expense:');
+      const hasForceLogKeyword = forceLogKeywords.some(kw => lowerText.includes(kw)) || isExplicitLogPrefix;
 
       if (hasForceLogKeyword) {
         intent = 'LOG';
       } else {
+        const questionPrefixes = [
+          'can i', 'can we', 'may i', 'should i', 'could i', 'is it', 'do i', 'does ', 'what if',
+          'how can', 'why ', 'shall i', 'am i', 'are we', 'would it', 'can u', 'can you', 'is there', 'are there',
+          'question'
+        ];
+        const isQuestionPhrase = questionPrefixes.some(qp => lowerText.startsWith(qp) || lowerText.includes(` ${qp}`)) || lowerText.endsWith('?');
+
         const queryKeywords = [
           'today logs', 'today\'s logs', 'todays logs', 'show logs', 'my logs', 'recent logs', 'all logs', 'get logs', 'view logs', 'log history',
           'show', 'display', 'list', 'what', 'how', 'when', 'where', 'did i', 'have i', 'history', 'summary', 'report', 'tell me',
           'what did i', 'show me', 'list my', 'get my', 'view my', 'check my', 'find my', 'any logs', 'my entries'
         ];
-        const isQueryPhrase = queryKeywords.some(kw => lowerText.includes(kw));
-        const isSingleWordCategory = ['sleep', 'expense', 'expenses', 'meals', 'meal', 'mood', 'exercise', 'exercises', 'history', 'logs', 'log'].includes(lowerText);
+        const isQueryPhrase = (isQuestionPhrase || queryKeywords.some(kw => lowerText.includes(kw))) && !isExplicitLogPrefix;
+        const isSingleWordCategory = ['sleep', 'expense', 'expenses', 'meals', 'meal', 'mood', 'exercise', 'exercises', 'history', 'logs'].includes(lowerText);
         const onlyHashtagsRegex = /^#[a-zA-Z0-9\-_]+(\s+#[a-zA-Z0-9\-_]+)*$/;
 
         if (isQueryPhrase || isSingleWordCategory || onlyHashtagsRegex.test(trimmedText)) {
           intent = 'QUERY';
         } else {
           try {
-            const classifierPrompt = `You are an intent classifier.
-Classify the user message: "${trimmedText}"
-${history && history.length > 0 ? `\nRecent conversation context:\n${history.slice(-4).map((h: any) => `${h.role}: "${h.content}"`).join('\n')}\n` : ''}
+            const classifierPrompt = `You are an intent classifier for a personal AI companion.
+Analyze the user's message: "${trimmedText}"
+${history && history.length > 0 ? `\nRecent conversation history:\n${history.slice(-4).map((h: any) => `${h.role}: "${h.content}"`).join('\n')}\n` : ''}
+${draftContext ? `Pending Clarification Question: "${draftContext.clarification_prompt}"\n` : ''}
 
-CRITICAL RULES:
-- If the user is asking to view, list, check, summarize, or ask questions about their logs or history (e.g. "today logs", "show today logs", "what did I eat", "how much did I spend", "my sleep", "yesterday?"), classify STRICTLY as 'QUERY'.
-- ONLY classify as 'LOG' if the user is explicitly telling you to record, save, add, or remember new data points, metrics, activities, notes, or reminders (e.g. "ate oats for breakfast", "spent 100 on groceries", "slept 8 hours").
+Classify into ONE of 3 categories:
+- 'QUERY': User is asking to view, list, check, search, summarize, or ask questions about existing stored logs, history, or pantry (e.g. "today logs", "show logs", "what did I eat", "how much spent").
+- 'LOG': User is instructing to record, log, save, or add structured data/metrics/activities, or replying to a pending log prompt (e.g. "log for last 3 days", "ate oats", "spent 200", "slept 7 hours", "log I am frustrated", "worked 4h").
+- 'CHAT': Greetings, casual remarks, conversational chitchat, or direct answers to Buddy's previous non-log questions (e.g. "hi", "bad", "fine", "will meet afternoon", "asking you", "thanks", "ok").
 
-Reply with exactly one word: 'LOG' or 'QUERY'.`;
+Reply with strictly ONE word: 'LOG', 'QUERY', or 'CHAT'.`;
             const check = await callLLM(config, classifierPrompt, trimmedText);
-            const res = check.toUpperCase();
-            if (res.includes('LOG') && !res.includes('QUERY')) {
-              intent = 'LOG';
-            } else {
+            const res = check.toUpperCase().trim();
+            if (res.includes('QUERY')) {
               intent = 'QUERY';
+            } else if (res.includes('CHAT')) {
+              intent = 'CHAT';
+            } else {
+              intent = 'LOG';
             }
           } catch (_) {
-            intent = 'QUERY';
+            intent = 'CHAT';
           }
         }
       }
@@ -670,23 +806,98 @@ Reply with exactly one word: 'LOG' or 'QUERY'.`;
 
     const timezone = 'Asia/Kolkata';
 
+    // ── CASE C: CHAT (CONVERSATIONAL FRIEND AI & AUTO MOOD LOGGING) ──
+    if (intent === 'CHAT') {
+      const lowerChat = trimmedText.toLowerCase();
+      const isConversationalPleasantry = /^(good|nice|cool|great)\s+(buddy|job|night|morning|afternoon|evening|work|one|thanks|thank you|bro|man)/i.test(lowerChat) ||
+        /(sounds|looks|all|that's|is)\s+good/i.test(lowerChat) ||
+        /^(good|nice|cool|awesome|great|ok|okay|thanks)$/i.test(lowerChat);
+
+      const strongMoodKeywords = ['sad', 'frustrated', 'depressed', 'anxious', 'stressed', 'tired', 'exhausted', 'horrible', 'feeling down'];
+      const explicitMoodPhrase = /(feeling|feel|i am|i'm|my mood)\s+(good|great|happy|excited|awesome|bad|sad|tired|anxious|stressed)/i.test(lowerChat);
+      const hasStrongMoodWord = strongMoodKeywords.some(m => new RegExp(`\\b${m}\\b`, 'i').test(lowerChat));
+
+      const expressMood = !isConversationalPleasantry && (explicitMoodPhrase || hasStrongMoodWord);
+
+      if (expressMood) {
+        const moodKeywords = ['bad', 'sad', 'frustrated', 'depressed', 'anxious', 'stressed', 'tired', 'exhausted', 'horrible', 'feeling down', 'great', 'happy', 'excited', 'awesome', 'good'];
+        const matchedMood = moodKeywords.find(m => new RegExp(`\\b${m}\\b`, 'i').test(lowerChat)) || 'neutral';
+        console.log(`[serve] CHAT intent detected explicit mood expression: "${matchedMood}". Auto-logging mood...`);
+
+        const moodEmbed = `mood: feeling ${matchedMood} ("${trimmedText}") - Data: ${JSON.stringify({ mood: matchedMood })}`;
+        const embedding = await getEmbedding(moodEmbed);
+
+        await supabaseClient.from('entries').insert([{
+          user_id: userId,
+          raw_text: trimmedText,
+          category: 'mood',
+          entry_time: new Date().toISOString(),
+          data: { mood: matchedMood, intensity: ['bad', 'frustrated', 'sad', 'depressed', 'horrible'].includes(matchedMood) ? 8 : 7 },
+          tags: [],
+          embedding: embedding || undefined
+        }]);
+      }
+
+      const chatPrompt = `You are Buddy, the user's friendly personal AI companion.
+User Name: Sudhakar (call him Buddy or Boss).
+Timezone: Asia/Kolkata (Indian Standard Time - IST).
+Current Indian Date: ${getIndianDateStr()}
+Tone: Clean, warm, empathetic, supportive, and natural. Speak like a real human friend.
+Emoji & Greeting Rule (STRICT): NEVER attach any emojis to the word Buddy or greetings (e.g. NEVER write '🤙 Buddy', 'Hey Buddy 🤙', 'Buddy 🫂'). Do NOT use tacky or unnecessary emojis. Keep responses clean, natural, and friendly.
+Context: You are having a casual conversation with Sudhakar.
+Respond to his message in 1-2 friendly, conversational sentences. Do NOT ask robotic confirmation prompts like "Did you want me to log this?".`;
+
+      let chatUserMsg = '';
+      if (history && history.length > 0) {
+        chatUserMsg += `CONVERSATION HISTORY:\n` + history.slice(-6).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
+      }
+      chatUserMsg += `USER MESSAGE: "${trimmedText}"`;
+
+      const chatReply = await callLLM(config, chatPrompt, chatUserMsg);
+      return new Response(JSON.stringify({
+        entry: null,
+        acknowledgment: chatReply,
+        needs_clarification: false,
+        draftContext: null,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
     // ── CASE A: QUERY (GENERAL ASSISTANT & RAG SEARCH) ──
     if (intent === 'QUERY') {
-      const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
-      const parts = formatter.formatToParts(new Date());
-      const currentDateOnly = `${parts.find(p => p.type === 'year')?.value}-${parts.find(p => p.type === 'month')?.value}-${parts.find(p => p.type === 'day')?.value}`;
-      const todayFullStr = new Date().toLocaleString('en-US', { timeZone: timezone });
+      const currentDateOnly = getIndianDateStr();
+      const todayFullStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
 
+      // ── CONVERSATIONAL QUERY CONTEXT REWRITER (Abstract Coreference Resolver) ──
+      let effectiveQuery = trimmedText;
+      if (history && history.length > 0) {
+        try {
+          const contextualizerPrompt = `You are a conversational query context resolver.
+Given the recent conversation history and the user's latest message, rephrase the latest message into a standalone, self-contained search query.
 
+Rules:
+1. If the user's latest message is a follow-up query, layout request, date filter, or refinement, resolve implicit topics and categories from the conversation history so that the rephrased query is 100% self-contained.
+2. If the latest message is already self-contained, return it unchanged.
+3. Do NOT answer the question. Return ONLY the single rephrased query text string without quotes or explanations.`;
+
+          const contextHistoryText = history.slice(-6).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n');
+          const reworded = await callLLM(config, contextualizerPrompt, `CONVERSATION HISTORY:\n${contextHistoryText}\n\nLATEST USER MESSAGE: "${trimmedText}"`);
+          if (reworded && reworded.trim()) {
+            effectiveQuery = reworded.trim().replace(/^["']|["']$/g, '');
+            console.log(`[serve] Conversational Coreference Resolved: "${trimmedText}" ➔ "${effectiveQuery}"`);
+          }
+        } catch (err) {
+          console.warn('[serve] Contextual query rewriter failed, falling back to raw query:', err);
+        }
+      }
 
       // Check if it is a quantitative query requiring database-side math aggregation
       let aggregateStatsContext = '';
-      const isQuantitativeQuery = /(how\s+(many|much)|total|average|avg|sum\s+of|frequency\s+of|how\s+often)/i.test(trimmedText);
+      const isQuantitativeQuery = /(how\s+(many|much)|total|average|avg|sum\s+of|frequency\s+of|how\s+often)/i.test(effectiveQuery);
 
       if (isQuantitativeQuery) {
         console.log('[serve] Quantitative query detected. Running DB aggregate classifier...');
         try {
-          const parserPrompt = `You are a query parsing assistant. Analyze this user query: "${trimmedText}"
+          const parserPrompt = `You are a query parsing assistant. Analyze this user query: "${effectiveQuery}"
 Current Time/Calendar Reference: ${todayFullStr}
 
 Extract the quantitative database query parameters as a JSON object:
@@ -701,7 +912,7 @@ Extract the quantitative database query parameters as a JSON object:
 
 Return ONLY this JSON object. Do not include markdown code block formatting or explanations.`;
 
-          const parseRes = await callLLM(config, parserPrompt, trimmedText);
+          const parseRes = await callLLM(config, parserPrompt, effectiveQuery);
           let cleanedParse = parseRes.trim();
           const jsonMatch = cleanedParse.match(/\{[\s\S]*?\}/);
           if (jsonMatch) cleanedParse = jsonMatch[0];
@@ -742,23 +953,23 @@ Return ONLY this JSON object. Do not include markdown code block formatting or e
       }
 
       let historyContext = '';
-      const queryVector = await getEmbedding(trimmedText);
-      const hashtags = (trimmedText.match(/#([a-zA-Z0-9\-_]+)/g) || []).map(tag => tag.substring(1).toLowerCase());
+      const queryVector = await getEmbedding(effectiveQuery);
+      const hashtags = (effectiveQuery.match(/#([a-zA-Z0-9\-_]+)/g) || []).map(tag => tag.substring(1).toLowerCase());
 
       // Multi-Category Targeted Router Classifier
       let targetCategories: string[] = ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
-      const lowerQuery = trimmedText.toLowerCase();
+      const lowerQuery = effectiveQuery.toLowerCase();
       const isGeneralQuery = ['log', 'logs', 'history', 'everything', 'all', 'summary', 'summarize', 'report', 'show all', 'list all'].some(kw => lowerQuery.includes(kw));
 
       if (isGeneralQuery) {
         console.log('[serve] General query keyword matched. Bypassing router.');
       } else {
         try {
-          const classifierPrompt = `Identify which log categories are relevant to the user query: "${trimmedText}".
+          const classifierPrompt = `Identify which log categories are relevant to the user query: "${effectiveQuery}".
 Available categories: 'meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'.
 Return ONLY a JSON array of strings containing the relevant categories, e.g. ["meal"] or ["meal", "sleep"].
 If the query is a general lookup, planning, or is not category-specific, return all categories: ["meal", "sleep", "expense", "mood", "exercise", "work", "other"].`;
-          const res = await callLLM(config, classifierPrompt, trimmedText);
+          const res = await callLLM(config, classifierPrompt, effectiveQuery);
           let cleaned = res.trim();
           const jsonMatch = cleaned.match(/\[[\s\S]*?\]/);
           if (jsonMatch) cleaned = jsonMatch[0];
@@ -797,8 +1008,11 @@ If the query is a general lookup, planning, or is not category-specific, return 
       let queryBuilder = supabaseClient
         .from('entries')
         .select('id, entry_time, category, raw_text, data, tags, event_date')
-        .eq('user_id', userId)
-        .in('category', targetCategories);
+        .eq('user_id', userId);
+
+      if (!isGeneralQuery && targetCategories.length > 0) {
+        queryBuilder = queryBuilder.in('category', targetCategories);
+      }
 
       if (hashtags.length > 0) {
         queryBuilder = queryBuilder.contains('tags', hashtags);
@@ -927,14 +1141,29 @@ If the query is a general lookup, planning, or is not category-specific, return 
               detailsStr = `${e.data.activity || 'Exercise'} (${e.data.duration_minutes || 0} mins)`;
             } else if (e.category === 'work') {
               detailsStr = `${e.data.description || 'Work'} (${e.data.duration_hours || 'N/A'} hrs)`;
+            } else if (e.category === 'mood') {
+              detailsStr = `Mood: ${e.data.mood || 'Logged Mood'} ("${e.raw_text}")`;
             } else {
-              detailsStr = e.raw_text;
+              detailsStr = (e.raw_text || '').replace(/\*/g, '').trim();
             }
           } else {
-            detailsStr = e.raw_text;
+            detailsStr = (e.raw_text || '').replace(/\*/g, '').trim();
           }
 
-          return `-[Date: ${entryDateStr}] (${relativeStr})${calendarStr} [Category: ${e.category}] Text: "${e.raw_text}" | Summary: ${detailsStr}`;
+          const entryTimeStr = new Date(e.entry_time).toLocaleTimeString('en-US', {
+            timeZone: timezone,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true
+          });
+          const entryTime24Str = new Date(e.entry_time).toLocaleTimeString('en-US', {
+            timeZone: timezone,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+          });
+
+          return `-[Time: ${entryTimeStr} / ${entryTime24Str} (24h)] [Date: ${entryDateStr}] (${relativeStr})${calendarStr} [Category: ${e.category}] Text: "${e.raw_text}" | Summary: ${detailsStr}`;
         }).join('\n');
       }
 
@@ -995,25 +1224,64 @@ Strict Rules for Date-Relative Queries (CRITICAL):
    - If an entry has a 'Scheduled Event Date' (event_date) matching the queried date (e.g. today ${currentDateOnly}), you MUST treat and count it as logged for that queried date directly, even if the entry's original entry_time date was in the past (e.g. logged yesterday).
    - Do NOT tell the user "You haven't logged any breakfast data for today" if a scheduled entry exists for today; report it directly as today's log.
 
+9. Day-over-Day Comparison & Analytics Rule (STRICT):
+   - Whenever the user asks to compare days or requests a comparison (e.g. "compare with yesterday", "compare today and yesterday", "yeah compare", "how does today compare", "compare"):
+     - You MUST NOT write one long continuous paragraph! Divide your response into short, structured paragraphs and bullet points.
+     - You MUST provide side-by-side metric comparisons with EXACT NUMBERS for work, sleep, expenses, meals, and leisure:
+       Example Format:
+       Here is how **Today** compares to **Yesterday**:
+
+       • 💻 **Work**: 4 hours today vs. 6 hours yesterday (-2 hrs)
+       • 😴 **Sleep**: 0 hours today vs. 7 hours yesterday (-7 hrs)
+       • 💳 **Expenses**: ₹200 today vs. ₹0 yesterday (+₹200)
+       • 🎬 **Movies & Leisure**: 2 movies today ("Maa Inti Bangaram", "Lenin") vs. 0 yesterday
+       • 💬 **Mood**: Bad & Frustrated today vs. Good mood yesterday
+
+10. Clean Media & Title Formatting Rule (STRICT):
+    - Strip raw surrounding asterisks (*) from movie titles or raw text descriptions. Display clean titles like "Watched: Maa Inti Bangaram" instead of raw markdown glitch text.
+
 Strict Completeness Rule (CRITICAL):
-- You MUST list and describe EVERY SINGLE LOG entry that matches the requested period (e.g. today, yesterday, or a specific range) present in the HISTORICAL DIARY LOGS.
-- If there are multiple entries for the same category (e.g. breakfast, skipped lunch, and a snack all under the "meal" category), you MUST list ALL of them.
-- Do NOT summarize or only list the most recent one.
-- Clearly distinguish each log by its specific details (e.g., meal items, meal types, sleep hours, activity duration).
+- You MUST list and describe EVERY SINGLE LOG entry matching the requested period present in HISTORICAL DIARY LOGS across ALL categories (Meals, Work, Expenses, Mood, Notes, Movies, Sleep, Exercise, and any custom/other entries).
+- NEVER omit or drop Mood, Notes, or Other category entries!
+- If there are multiple entries for the same category, list ALL of them chronologically.
 
 Strict Formatting & Presentation Guidelines (CRITICAL):
-1. Distinguish between Lookup Queries and Recommendation/Analytical Queries:
-   - Logging Lookup Queries (e.g., "what did I eat today?", "show logs", "list today's meals"):
-     - Use clean human Markdown bullet points (e.g., "* **Breakfast**: 3 poori", "* **Lunch**: Skipped", "* **Snack**: Bonda").
-     - NEVER output raw JSON blobs, curly braces `{ }`, or raw string labels like ` -> Data: { "items": ["poori"] } `.
-     - Below the bulleted list, present a clean Markdown table summarizing the details (e.g., columns like Meal Type | Items | Status).
-   - Recommendation, Planning, or Conversational Queries (e.g., "confused what to eat today", "what to have for dinner"):
-     - Do NOT output tables unless requested. Give a direct, friendly response.
-2. Warm, Humorous & Friendly Persona — Buddy:
-   - Chat like a close friend, supportive coach, and witty roommate with a great sense of humor!
-   - Emoji Rule (STRICT): Use at most ONE single emoji per bullet point or sentence (e.g. 🥞 or ☕). NEVER group or stack multiple emojis together (e.g. NEVER write 🍕👀💆‍♀️ or 🥳🕺 or 🍿😂). Keep emoji usage clean and subtle.
-   - Respond strictly in 100% clean, fluent English.
-3. Translate raw data into friendly human terms (e.g. display skipped meals cleanly as "Skipped").
+1. Multi-Style Presentation Engine (Respect User's Layout Command):
+   - **Style A: Category Cards (Default / "show as cards")**:
+     Group logs by clean markdown subheadings per category. Example:
+     ### 🍲 Meals
+     - **Breakfast**: 3 poori
+     ### 💻 Work
+     - Software Laptop Work (4 hrs)
+     ### ⏰ Mood
+     - **03:47 AM** • Mood: Frustrated ("I am too frustrated now")
+
+   - **Style B: Chronological Timeline ("show as timeline" / "timeline view")**:
+     If the user asks for timeline view or exact times, list chronologically with time pills:
+     - (03:18 AM) • **Breakfast**: 3 poori
+     - (03:20 AM) • **Work**: Laptop Work (4 hrs)
+     - (03:47 AM) • **Mood**: Frustrated ("I am too frustrated now")
+
+   - **Style C: Summary Table ("show as table" / "table view")**:
+     If the user asks for a table or follow-up table view, render a crisp Markdown table:
+     | Time / Category | Activity | Details |
+     | --- | --- | --- |
+     | 🍲 Breakfast | 3 poori | Eating outside |
+     | 💻 Work | Laptop Work | 4 hrs total |
+     | ⏰ 03:47 AM Mood | Frustrated | "I am too frustrated now" |
+
+2. Timestamp & 24-Hour Time Format Rules (STRICT):
+   - Native 24-Hour Time Mode: Prefer displaying exact minute timestamps in 24-hour format (e.g. 08:48 or 15:47) or 12-hour AM/PM format (e.g. 08:48 AM / 03:47 PM) so entries are effortless to manage and compare.
+   - Mood Timestamp Rule (STRICT): For Mood entries, ALWAYS display the exact minute timestamp (e.g. "08:48 • Mood: Bad" or "15:47 • Mood: Frustrated").
+
+3. Paragraph & Readability Rules (STRICT):
+   - NEVER output a long continuous wall-of-text paragraph. Always break text into short, multi-line paragraphs separated by blank lines.
+   - Use bullet points for comparisons, lists, and multi-metric breakdowns.
+
+4. Persona & Style:
+   - Chat like Buddy: articulate, warm, supportive roommate and friend.
+   - Emoji Rule (STRICT): Do NOT spam or use tacky emojis. Keep layout clean, modern, and easy to read.
+   - Respond 100% in clean, fluent English. Translate raw JSON data into friendly terms.
 
 HISTORICAL DIARY LOGS:
 ${historyContext || 'No past logs found.'}`;
@@ -1080,8 +1348,18 @@ ${historyContext || 'No past logs found.'}`;
       return regex.test(trimmedText);
     });
 
-    if (intent === 'LOG' && !finalImageUrl && !hasExplicitVerb && !parsed.needs_clarification) {
-      console.log(`[serve] Programmatic Doubt-Buster triggered: No explicit logging verb in "${trimmedText}".`);
+    const hasStructuredMetric = /\d+\s*(h|hr|hrs|hours|min|mins|minutes|km|kg|ml|l|inr|rs|rupees|days|d|%)/i.test(trimmedText);
+    const hasValidParsedData = parsed.category && parsed.category !== 'other' && (
+      (parsed.category === 'sleep' && Number(parsed.data?.hours) > 0) ||
+      (parsed.category === 'expense' && (Number(parsed.data?.amount) > 0 || parsed.data?.description)) ||
+      (parsed.category === 'meal' && (parsed.data?.items?.length > 0 || parsed.data?.meal_type)) ||
+      (parsed.category === 'work' && (Number(parsed.data?.duration_hours) > 0 || parsed.data?.description)) ||
+      (parsed.category === 'exercise' && (parsed.data?.activity || Number(parsed.data?.duration_minutes) > 0)) ||
+      (parsed.action === 'bulk_insert' && parsed.bulk_entries && parsed.bulk_entries.length > 0)
+    );
+
+    if (intent === 'LOG' && !finalImageUrl && !hasExplicitVerb && !hasStructuredMetric && !hasValidParsedData && !parsed.needs_clarification) {
+      console.log(`[serve] Programmatic Doubt-Buster triggered: Ambiguous log message "${trimmedText}".`);
       parsed.needs_clarification = true;
       parsed.clarification_prompt = `I noticed you mentioned '${trimmedText}'. Did you want me to log this, or is it just a comment?`;
     }
@@ -1096,7 +1374,7 @@ ${historyContext || 'No past logs found.'}`;
 
     // ── DATABASE-LEVEL INTELLECTUAL DUPLICATE VALIDATION ──
     if ((parsed.action === 'insert' || parsed.action === 'bulk_insert') && !parsed.needs_clarification) {
-      const targetDate = parsed.entry_time ? parsed.entry_time.split('T')[0] : new Date().toISOString().split('T')[0];
+      const targetDate = parsed.entry_time ? getIndianDateStr(parsed.entry_time) : getIndianDateStr();
       let conflictEntryId = null;
       let conflictDetails = '';
       let conflictingBulkIndex = -1;

@@ -224,7 +224,7 @@ export default function SettingsPanel() {
 
   return (
     <div className="settings-viewport">
-      <h3 className="settings-box-title">⚙️ Configuration</h3>
+      <h3 className="settings-box-title">Configuration</h3>
 
       <div className="settings-form">
         {/* Provider selection */}

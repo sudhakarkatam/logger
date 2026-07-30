@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
-import { 
-  queryPantry, 
-  queryRecipes, 
-  deleteRecipe, 
-  deletePantryItem, 
-  updatePantryItemQuantity, 
-  updatePantryItemExpiry 
+import {
+  queryPantry,
+  queryRecipes,
+  deleteRecipe,
+  deletePantryItem,
+  updatePantryItemQuantity,
+  updatePantryItemExpiry
 } from '../api';
 
 export default function PantryCookbookView() {
@@ -117,7 +117,7 @@ export default function PantryCookbookView() {
         <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Loading pantry inventory and recipes...</div>
       ) : (
         <div className="pantry-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '24px' }}>
-          
+
           {/* SECTION 1: PANTRY INVENTORY */}
           <div className="pantry-section" style={{ background: 'var(--surface)', padding: '20px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
             <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '16px', color: 'var(--brand-orange)', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -139,7 +139,7 @@ export default function PantryCookbookView() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       {/* Quantity Editor */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,0.04)', borderRadius: '6px', padding: '2px 6px' }}>
-                        <button 
+                        <button
                           style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontWeight: 'bold' }}
                           onClick={() => handleQtyChange(item.id, Number(item.quantity), -1)}
                         >
@@ -148,7 +148,7 @@ export default function PantryCookbookView() {
                         <span style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-main)', minWidth: '40px', textAlign: 'center' }}>
                           {item.quantity} {item.unit}
                         </span>
-                        <button 
+                        <button
                           style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontWeight: 'bold' }}
                           onClick={() => handleQtyChange(item.id, Number(item.quantity), 1)}
                         >
@@ -157,14 +157,14 @@ export default function PantryCookbookView() {
                       </div>
 
                       {/* Expiry Editor calendar override */}
-                      <input 
-                        type="date" 
+                      <input
+                        type="date"
                         value={item.expiry_date ? item.expiry_date.split('T')[0] : ''}
                         onChange={(e) => handleExpiryChange(item.id, e.target.value)}
                         style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 6px', color: 'var(--text-main)', fontSize: '0.75rem', cursor: 'pointer' }}
                       />
 
-                      <button 
+                      <button
                         onClick={() => handleDeletePantry(item.id)}
                         style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.9rem' }}
                         title="Delete item"
@@ -189,14 +189,14 @@ export default function PantryCookbookView() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '16px' }}>
                 {recipes.map((recipe) => (
                   <div key={recipe.id} className="recipe-card" style={{ padding: '14px', background: 'rgba(255, 255, 255, 0.02)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(255,255,255,0.03)', position: 'relative' }}>
-                    <button 
+                    <button
                       onClick={() => handleDeleteRecipe(recipe.id)}
                       style={{ position: 'absolute', top: '14px', right: '14px', background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.95rem' }}
                       title="Delete recipe"
                     >
                       🗑️
                     </button>
-                    
+
                     <h4 style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-main)', marginBottom: '8px', paddingRight: '24px' }}>
                       {recipe.name}
                     </h4>
