@@ -166,31 +166,8 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
         </View>
       </M3Card>
 
-      {/* Material 3 Quick Action Grid */}
-      <Text style={styles.sectionHeader}>⚡ Quick Capture Actions</Text>
-      <View style={styles.quickGrid}>
-        {quickActions.map((act, idx) => (
-          <TouchableOpacity
-            key={idx}
-            style={styles.quickTileCardContainer}
-            onPress={() => onQuickLog(act.prefix)}
-            activeOpacity={0.85}
-          >
-            <View style={[styles.quickTileCard, { borderColor: `${act.color}35` }]}>
-              <View style={styles.quickTileTopRow}>
-                <View style={[styles.quickTileIconBadge, { backgroundColor: `${act.color}25` }]}>
-                  <Text style={styles.quickTileIcon}>{act.icon}</Text>
-                </View>
-                <Text style={[styles.quickTileArrow, { color: act.color }]}>→</Text>
-              </View>
-              <Text style={styles.quickTileLabel}>{act.label}</Text>
-              <Text style={styles.quickTileDesc}>{act.desc}</Text>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {/* 1-Tap Instant Counter Pills */}
+      {/* 1-Tap Instant Counter Shortcuts */}
+      <Text style={styles.sectionHeader}>⚡ Quick Shortcuts</Text>
       <View style={styles.instantPillsRow}>
         <TouchableOpacity style={styles.instantPill} onPress={() => onQuickLog('log water: 1 glass (250ml)')}>
           <Text style={styles.instantPillText}>💧 +1 Glass Water</Text>
@@ -204,61 +181,6 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
           <Text style={styles.instantPillText}>🏃 30m Workout</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Material 3 AI Daily Reflection Card */}
-      <M3Card variant="outlined" style={styles.aiCard}>
-        <View style={styles.aiHeader}>
-          <Text style={styles.aiTitle}>✨ Daily AI Reflection</Text>
-          <TouchableOpacity onPress={() => onNavigateTab('analytics')}>
-            <Text style={styles.aiLink}>Full Analytics →</Text>
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.aiText}>
-          {aiInsight || '"Consistency builds momentum. Keep logging meals, sleep & mood to unlock dynamic habit correlations!"'}
-        </Text>
-      </M3Card>
-
-      {/* Activity Carousel */}
-      <View style={styles.recentHeaderRow}>
-        <Text style={styles.sectionHeader}>📅 Recent Stream</Text>
-        <TouchableOpacity onPress={() => onNavigateTab('timeline')}>
-          <Text style={styles.seeAllText}>See Full Journal →</Text>
-        </TouchableOpacity>
-      </View>
-
-      {loading && !refreshing ? (
-        <ActivityIndicator color={md3Colors.primary} style={{ marginVertical: 20 }} />
-      ) : recentEntries.length === 0 ? (
-        <View style={styles.emptyBox}>
-          <Text style={styles.emptyText}>No recent logs yet. Tap "+ New Log" to start!</Text>
-        </View>
-      ) : (
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={recentEntries}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.recentList}
-          renderItem={({ item }) => (
-            <TouchableOpacity onPress={() => onNavigateTab('timeline')} activeOpacity={0.85}>
-              <M3Card variant="filled" style={styles.recentCard}>
-                <View style={{ marginBottom: 6 }}>
-                  <CategoryBadge category={item.category} size="small" />
-                </View>
-                <Text style={styles.recentRawText} numberOfLines={2}>
-                  {item.raw_text}
-                </Text>
-                <Text style={styles.recentTime}>
-                  {new Date(item.entry_time || item.created_at).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Text>
-              </M3Card>
-            </TouchableOpacity>
-          )}
-        />
-      )}
     </ScrollView>
   );
 }

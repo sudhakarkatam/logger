@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
-import { md3Colors, md3Typography } from '../theme';
+import { md3Typography } from '../theme';
 import { TabType, TabConfig } from './types';
 
 interface AppNavigatorProps {
@@ -13,8 +13,7 @@ export const NAV_TABS: TabConfig[] = [
   { id: 'home', label: 'Home', icon: '🏠' },
   { id: 'chat', label: 'Chat', icon: '💬' },
   { id: 'analytics', label: 'Analytics', icon: '📊' },
-  { id: 'pantry', label: 'Kitchen', icon: '🥦' },
-  { id: 'timeline', label: 'Journal', icon: '📅' },
+  { id: 'notifications', label: 'Alerts', icon: '🔔' },
   { id: 'settings', label: 'Settings', icon: '⚙️' },
 ];
 
@@ -41,7 +40,7 @@ export default function AppNavigator({ activeTab, onTabChange, isDesktop = false
     );
   }
 
-  // Material Design 3 Bottom NavigationBar (80dp height, indicator pill)
+  // Ultra-Clean Top App Navigation Dock (Minimalist, 0 clutter, transparent icon backgrounds)
   return (
     <View style={styles.bottomNav}>
       {NAV_TABS.map((tab) => {
@@ -53,11 +52,13 @@ export default function AppNavigator({ activeTab, onTabChange, isDesktop = false
             onPress={() => onTabChange(tab.id)}
             activeOpacity={0.7}
           >
-            {/* M3 Active Indicator Pill */}
-            <View style={[styles.indicatorPill, isActive && styles.indicatorPillActive]}>
-              <Text style={styles.navIcon}>{tab.icon}</Text>
-            </View>
-            <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>{tab.label}</Text>
+            <Text style={[styles.navIcon, isActive ? styles.navIconActive : styles.navIconInactive]}>
+              {tab.icon}
+            </Text>
+            <Text style={[styles.navLabel, isActive ? styles.navLabelActive : styles.navLabelInactive]}>
+              {tab.label}
+            </Text>
+            {isActive && <View style={styles.activeLine} />}
           </TouchableOpacity>
         );
       })}
@@ -80,29 +81,28 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   desktopNavItemActive: {
-    backgroundColor: md3Colors.secondaryContainer,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   desktopNavIcon: {
     fontSize: 16,
   },
   desktopNavLabel: {
     ...md3Typography.labelLarge,
-    color: md3Colors.onSurfaceVariant,
+    color: '#9CA3AF',
   },
   desktopNavLabelActive: {
-    color: md3Colors.onSecondaryContainer,
+    color: '#FFFFFF',
     fontWeight: 'bold',
   },
-  // Material 3 Bottom Navigation Bar
+
+  // Ultra-Clean Modern Dock (Top App Style - Zero Clutter)
   bottomNav: {
-    height: 76,
+    height: 64,
     flexDirection: 'row',
-    backgroundColor: md3Colors.surfaceContainer,
+    backgroundColor: '#0F0F12',
     borderTopWidth: 1,
-    borderTopColor: md3Colors.outlineVariant,
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 10,
+    borderTopColor: '#1F1F24',
+    paddingHorizontal: 10,
     justifyContent: 'space-around',
     alignItems: 'center',
   },
@@ -110,28 +110,34 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flex: 1,
-  },
-  indicatorPill: {
-    width: 56,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'transparent',
-  },
-  indicatorPillActive: {
-    backgroundColor: md3Colors.secondaryContainer,
+    paddingVertical: 4,
   },
   navIcon: {
-    fontSize: 18,
+    fontSize: 20,
+  },
+  navIconActive: {
+    opacity: 1,
+  },
+  navIconInactive: {
+    opacity: 0.45,
   },
   navLabel: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
+    fontSize: 11,
     marginTop: 3,
   },
   navLabelActive: {
-    color: md3Colors.onSecondaryContainer,
-    fontWeight: 'bold',
+    color: '#6366F1',
+    fontWeight: '800',
+  },
+  navLabelInactive: {
+    color: '#71717A',
+    fontWeight: '500',
+  },
+  activeLine: {
+    width: 16,
+    height: 2.5,
+    borderRadius: 1.5,
+    backgroundColor: '#6366F1',
+    marginTop: 3,
   },
 });

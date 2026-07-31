@@ -1,4 +1,4 @@
-export type TabType = 'home' | 'chat' | 'analytics' | 'pantry' | 'timeline' | 'settings';
+export type TabType = 'home' | 'chat' | 'analytics' | 'pantry' | 'timeline' | 'settings' | 'notifications';
 
 export interface TabConfig {
   id: TabType;

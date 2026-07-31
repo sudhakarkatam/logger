@@ -2,24 +2,36 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
-// Safely configure notification handler with modern SDK 57 options
+// Configure notification handler for both foreground and background alerts
 try {
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
+      shouldShowAlert: true,
       shouldShowBanner: true,
       shouldShowList: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
     }),
   });
-} catch (_) {
-  // Ignored if unsupported on current environment
+} catch (_) {}
+
+// Ensure Android high-priority notification channel is active immediately
+if (Platform.OS === 'android') {
+  try {
+    Notifications.setNotificationChannelAsync('default', {
+      name: 'Buddy Reminders',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#6366F1',
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 export interface ScheduledNotificationItem {
   id: string;
   title: string;
   body: string;
+  timeLabel?: string;
   hour?: number;
   minute?: number;
 }
@@ -38,10 +50,7 @@ export async function getNotificationPermissionStatus() {
 }
 
 export async function registerForPushNotificationsAsync() {
-  if (Platform.OS === 'web') {
-    console.log('ℹ️ Push notifications are disabled on web preview.');
-    return null;
-  }
+  if (Platform.OS === 'web') return null;
   let token = null;
 
   try {
@@ -51,7 +60,7 @@ export async function registerForPushNotificationsAsync() {
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 250, 250, 250],
         lightColor: '#6366F1',
-      });
+      }).catch(() => {});
     }
 
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
@@ -63,17 +72,8 @@ export async function registerForPushNotificationsAsync() {
     }
 
     if (finalStatus !== 'granted') {
-      console.log('⚠️ Failed to get push notification permission');
+      console.log('⚠️ Notification permissions not granted');
       return null;
-    }
-
-    if (Device.isDevice) {
-      try {
-        token = (await Notifications.getExpoPushTokenAsync()).data;
-        console.log('🔔 Expo Push Token:', token);
-      } catch (e) {
-        console.log('⚠️ Could not fetch Expo push token:', e);
-      }
     }
   } catch (err) {
     console.warn('Notification registration warning:', err);
@@ -86,12 +86,43 @@ export async function registerForPushNotificationsAsync() {
 export async function getAllScheduledReminders(): Promise<ScheduledNotificationItem[]> {
   try {
     const requests = await Notifications.getAllScheduledNotificationsAsync();
+    const now = Date.now();
+
     return requests.map((req) => {
       const trigger = req.trigger as any;
+      const data = req.content.data as any;
+      let timeLabel = 'Active Reminder';
+
+      if (data?.targetTimeMs) {
+        const targetMs = Number(data.targetTimeMs);
+        const targetDate = new Date(targetMs);
+        const remainingSecs = Math.max(0, Math.floor((targetMs - now) / 1000));
+        const remainingMins = Math.ceil(remainingSecs / 60);
+        const formattedTime = targetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        timeLabel = `${formattedTime} (${remainingMins > 0 ? `in ${remainingMins} mins` : 'due now'})`;
+      } else if (trigger) {
+        if (trigger.seconds !== undefined || trigger.type === Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL) {
+          const secs = trigger.seconds || 0;
+          if (secs > 0) {
+            const targetDate = new Date(now + secs * 1000);
+            const formattedTime = targetDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            timeLabel = `${formattedTime} (in ${Math.max(1, Math.ceil(secs / 60))} mins)`;
+          } else {
+            timeLabel = 'Countdown Timer';
+          }
+        } else if (trigger.hour !== undefined && trigger.minute !== undefined) {
+          const hr = trigger.hour.toString().padStart(2, '0');
+          const min = trigger.minute.toString().padStart(2, '0');
+          timeLabel = `${hr}:${min} Daily`;
+        }
+      }
+
       return {
         id: req.identifier,
         title: req.content.title || 'Buddy Reminder',
         body: req.content.body || '',
+        timeLabel,
         hour: trigger?.hour,
         minute: trigger?.minute,
       };
@@ -102,7 +133,6 @@ export async function getAllScheduledReminders(): Promise<ScheduledNotificationI
   }
 }
 
-// Cancel a specific notification by identifier ID
 export async function cancelScheduledReminder(identifier: string): Promise<boolean> {
   try {
     await Notifications.cancelScheduledNotificationAsync(identifier);
@@ -113,7 +143,6 @@ export async function cancelScheduledReminder(identifier: string): Promise<boole
   }
 }
 
-// Clear all scheduled notifications
 export async function cancelAllReminders(): Promise<boolean> {
   try {
     await Notifications.cancelAllScheduledNotificationsAsync();
@@ -124,7 +153,6 @@ export async function cancelAllReminders(): Promise<boolean> {
   }
 }
 
-// Preset Reminders (Morning, Lunch, Evening, Expiry)
 export const PRESET_REMINDERS = [
   {
     type: 'morning',
@@ -165,11 +193,13 @@ export async function schedulePresetReminder(presetType: string): Promise<boolea
   if (!preset) return false;
 
   try {
+    await registerForPushNotificationsAsync();
     await Notifications.scheduleNotificationAsync({
       content: {
         title: preset.title,
         body: preset.body,
         sound: true,
+        priority: Notifications.AndroidNotificationPriority.MAX,
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DAILY,
@@ -188,11 +218,13 @@ export async function schedulePresetReminder(presetType: string): Promise<boolea
 
 export async function scheduleCustomReminder(title: string, body: string, hour: number, minute: number): Promise<boolean> {
   try {
+    await registerForPushNotificationsAsync();
     await Notifications.scheduleNotificationAsync({
       content: {
         title: title || '✨ Buddy Reminder',
         body: body || 'Time to log your daily reflection!',
         sound: true,
+        priority: Notifications.AndroidNotificationPriority.MAX,
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DAILY,
@@ -209,15 +241,45 @@ export async function scheduleCustomReminder(title: string, body: string, hour: 
   }
 }
 
+export async function scheduleRelativeReminder(title: string, body: string, secondsDelay: number): Promise<boolean> {
+  try {
+    await registerForPushNotificationsAsync();
+    const targetMs = Date.now() + Math.max(1, Math.floor(secondsDelay)) * 1000;
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: title || '✨ Buddy Reminder',
+        body: body || 'Time to log your daily reflection!',
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.MAX,
+        data: { targetTimeMs: targetMs },
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: Math.max(1, Math.floor(secondsDelay)),
+        repeats: false,
+      },
+    });
+
+    console.log(`⏰ Relative countdown reminder scheduled for ${secondsDelay} seconds (Target: ${new Date(targetMs).toLocaleTimeString()})`);
+    return true;
+  } catch (err) {
+    console.error('Error scheduling relative reminder:', err);
+    return false;
+  }
+}
+
 export async function sendInstantLocalNotification(title: string, body: string) {
   try {
+    await registerForPushNotificationsAsync();
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
         body,
         sound: true,
+        priority: Notifications.AndroidNotificationPriority.MAX,
       },
-      trigger: null, // Send immediately
+      trigger: null, // Instant trigger
     });
   } catch (err) {
     console.warn('Local notification error:', err);

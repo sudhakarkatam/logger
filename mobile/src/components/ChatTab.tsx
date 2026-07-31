@@ -19,9 +19,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { md3Colors, md3Typography } from '../theme';
 import { sendMessage, uploadMedia, deleteEntry, queryEntries, getLocalSettings, saveLocalSettings } from '../services/api';
 import { CATEGORY_CHIPS, DEFAULT_PRESETS, QUICK_MODELS, PROVIDER_DISPLAY, Provider } from '../utils/constants';
+import { parseNaturalLanguageReminder } from '../services/alarms';
+import { scheduleCustomReminder, scheduleRelativeReminder } from '../services/notifications';
 import MarkdownRenderer from './ui/MarkdownRenderer';
 import CategoryBadge from './ui/CategoryBadge';
 import M3Chip from './ui/m3/M3Chip';
+import VoiceDictationModal from './VoiceDictationModal';
 
 interface ChatMessage {
   id: string;
@@ -49,6 +52,7 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showCategoryDrawer, setShowCategoryDrawer] = useState(false);
+  const [showVoiceModal, setShowVoiceModal] = useState(false);
 
   // Draft Context & Undo Toast
   const [draftContext, setDraftContext] = useState<any | null>(null);
@@ -123,6 +127,30 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         sender: m.sender,
         text: m.text
       }));
+
+      // Phase 13: Check if input text is a natural language relative time reminder ("Remind me in 10 mins...")
+      const timeParsed = parseNaturalLanguageReminder(textToSend);
+      if (timeParsed.isTimeReminder) {
+        if (timeParsed.minutesDelay) {
+          const secondsDelay = timeParsed.minutesDelay * 60;
+          const targetTime = new Date(Date.now() + secondsDelay * 1000);
+          const hr = targetTime.getHours();
+          const min = targetTime.getMinutes();
+          await scheduleRelativeReminder('✨ Buddy Reminder', timeParsed.reminderText || 'Time reminder', secondsDelay);
+
+          const formattedTargetTime = targetTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const aiMsg: ChatMessage = {
+            id: (Date.now() + 1).toString(),
+            sender: 'ai',
+            text: `⏰ **Reminder Scheduled for ${formattedTargetTime}!** (in ${timeParsed.minutesDelay} mins): *"${timeParsed.reminderText}"*.`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          };
+          setMessages((prev) => [...prev, aiMsg]);
+          setLoading(false);
+          onLogAdded();
+          return;
+        }
+      }
 
       const mode = chatMode === 'chef' ? 'chef' : chatMode === 'lifegpt' ? 'lifegpt' : 'general';
       const response = await sendMessage(
@@ -447,6 +475,13 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
           />
 
           <TouchableOpacity
+            style={styles.micBtn}
+            onPress={() => setShowVoiceModal(true)}
+          >
+            <Text style={{ fontSize: 16 }}>🎙️</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.sendBtn, (!inputText.trim() && !selectedImage) && styles.sendBtnDisabled]}
             onPress={() => handleSend()}
             disabled={(!inputText.trim() && !selectedImage) || loading}
@@ -455,6 +490,13 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Voice Speech Dictation Modal */}
+      <VoiceDictationModal
+        visible={showVoiceModal}
+        onClose={() => setShowVoiceModal(false)}
+        onVoiceTranscribed={(text) => setInputText(text)}
+      />
 
       {/* Model Selection Modal */}
       <Modal visible={showModelPicker} transparent animationType="fade" onRequestClose={() => setShowModelPicker(false)}>
@@ -679,6 +721,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     paddingHorizontal: 8,
     paddingVertical: 8,
+  },
+  micBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: md3Colors.surfaceContainerHighest,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 4,
+    borderWidth: 1,
+    borderColor: md3Colors.outlineVariant,
   },
   sendBtn: {
     backgroundColor: md3Colors.primary,

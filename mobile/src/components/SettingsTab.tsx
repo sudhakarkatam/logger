@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   Share,
+  Modal,
 } from 'react-native';
 import { md3Colors, md3Typography } from '../theme';
 import { getLocalSettings, saveLocalSettings, testConnection, queryEntries } from '../services/api';
@@ -24,14 +25,18 @@ import NotificationManagerScreen from './NotificationManagerScreen';
 
 interface SettingsTabProps {
   onOpenNotifManager?: () => void;
+  onOpenAlarmHub?: () => void;
+  onOpenJournal?: () => void;
+  onOpenPantry?: () => void;
 }
 
-export default function SettingsTab({ onOpenNotifManager }: SettingsTabProps) {
+export default function SettingsTab({ onOpenNotifManager, onOpenAlarmHub, onOpenJournal, onOpenPantry }: SettingsTabProps) {
   const [provider, setProvider] = useState<Provider>('gemini');
   const [model, setModel] = useState('gemini-2.0-flash');
   const [testing, setTesting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [showLlmModal, setShowLlmModal] = useState(false);
 
   // Fallback Internal Screen Toggle
   const [showNotifManager, setShowNotifManager] = useState(false);
@@ -176,48 +181,60 @@ export default function SettingsTab({ onOpenNotifManager }: SettingsTabProps) {
         />
       </M3Card>
 
-      {/* AI LLM Provider Section */}
-      <M3Card variant="filled" style={styles.card}>
-        <Text style={styles.cardTitle}>🤖 AI LLM Provider & Model</Text>
-        <Text style={styles.cardSub}>Select your preferred AI model engine for natural language parsing.</Text>
-
-        <View style={styles.providerGrid}>
-          {(['gemini', 'groq', 'openrouter', 'openai', 'anthropic'] as Provider[]).map((p) => (
-            <M3Chip
-              key={p}
-              label={PROVIDER_DISPLAY[p]}
-              selected={provider === p}
-              onPress={() => {
-                const defaultModel = QUICK_MODELS[p]?.[0]?.id || p;
-                handleSaveSettings(p, defaultModel);
-              }}
-            />
-          ))}
+      {/* Google Clock Alarms & Shake Missions Launcher Card */}
+      <M3Card variant="elevated" style={styles.card}>
+        <View style={styles.cardHeaderRow}>
+          <Text style={styles.cardTitle}>⏰ Google Alarms & Shake Missions</Text>
+          <View style={[styles.permBadge, { backgroundColor: 'rgba(99,102,241,0.2)' }]}>
+            <Text style={{ color: md3Colors.primary, fontSize: 11, fontWeight: 'bold' }}>
+              Mission Ready 📳
+            </Text>
+          </View>
         </View>
-
-        <Text style={styles.fieldLabel}>Active Model Selection:</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-          {(QUICK_MODELS[provider] || []).map((m) => (
-            <TouchableOpacity
-              key={m.id}
-              style={[styles.modelChip, model === m.id && styles.modelChipActive]}
-              onPress={() => handleSaveSettings(provider, m.id)}
-            >
-              <Text style={[styles.modelChipText, model === m.id && styles.modelChipTextActive]}>{m.label}</Text>
-              {m.free && <Text style={styles.freeBadgeText}>FREE</Text>}
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        <Text style={styles.hintText}>{PROVIDER_HINTS[provider]}</Text>
+        <Text style={styles.cardSub}>
+          Google-style alarm switches, repeat days, 30-shake wake-up missions, and quick countdown timers.
+        </Text>
 
         <M3Button
-          label={testing ? 'Testing Connection...' : '⚡ Test AI Connection'}
-          onPress={handleTestConnection}
-          variant="tonal"
-          disabled={testing}
+          label="⏰ Open Alarm & Mission Hub →"
+          onPress={onOpenAlarmHub}
+          variant="filled"
         />
       </M3Card>
+
+      {/* AI LLM Provider Launcher Button */}
+      <View style={{ marginTop: 4, marginBottom: 8, width: '100%' }}>
+        <TouchableOpacity
+          style={{
+            backgroundColor: md3Colors.surfaceContainerHighest,
+            paddingHorizontal: 24,
+            paddingVertical: 16,
+            borderRadius: 20,
+            borderWidth: 1.5,
+            borderColor: md3Colors.outlineVariant,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+          }}
+          onPress={() => setShowLlmModal(true)}
+          activeOpacity={0.8}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <Text style={{ color: md3Colors.onSurface, fontSize: 16, fontWeight: '800' }}>
+              🤖 AI Models & LLM Engines
+            </Text>
+            <View style={{ backgroundColor: md3Colors.secondaryContainer, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 }}>
+              <Text style={{ color: md3Colors.onSecondaryContainer, fontSize: 11, fontWeight: 'bold' }}>
+                {PROVIDER_DISPLAY[provider]}
+              </Text>
+            </View>
+          </View>
+          <Text style={{ color: md3Colors.onSurface, fontSize: 18, fontWeight: 'bold' }}>
+            →
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Data Export & Backup Section */}
       <M3Card variant="outlined" style={styles.card}>
@@ -229,6 +246,113 @@ export default function SettingsTab({ onOpenNotifManager }: SettingsTabProps) {
           <M3Button label="📊 Share as CSV" onPress={() => handleExportData('csv')} variant="tonal" disabled={exporting} style={{ flex: 1 }} />
         </View>
       </M3Card>
+
+      {/* Kitchen Button (Full Width Button) */}
+      <View style={{ marginTop: 8, marginBottom: 8, width: '100%' }}>
+        <TouchableOpacity
+          style={{
+            backgroundColor: md3Colors.surfaceContainerHighest,
+            paddingHorizontal: 24,
+            paddingVertical: 16,
+            borderRadius: 20,
+            borderWidth: 1.5,
+            borderColor: md3Colors.outlineVariant,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+          }}
+          onPress={onOpenPantry}
+          activeOpacity={0.8}
+        >
+          <Text style={{ color: md3Colors.onSurface, fontSize: 16, fontWeight: '800' }}>
+            🥦 Kitchen & Pantry
+          </Text>
+          <Text style={{ color: md3Colors.onSurface, fontSize: 18, fontWeight: 'bold' }}>
+            →
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* History Button (Full Width Large Touch Area) */}
+      <View style={{ marginTop: 8, marginBottom: 24, width: '100%' }}>
+        <TouchableOpacity
+          style={{
+            backgroundColor: md3Colors.secondaryContainer,
+            paddingHorizontal: 24,
+            paddingVertical: 16,
+            borderRadius: 20,
+            borderWidth: 1.5,
+            borderColor: md3Colors.outlineVariant,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+          }}
+          onPress={onOpenJournal}
+          activeOpacity={0.8}
+        >
+          <Text style={{ color: md3Colors.onSecondaryContainer, fontSize: 16, fontWeight: '800' }}>
+            📜 View Activity History
+          </Text>
+          <Text style={{ color: md3Colors.onSecondaryContainer, fontSize: 18, fontWeight: 'bold' }}>
+            →
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* AI LLM Engines Dedicated Config Modal */}
+      <Modal visible={showLlmModal} transparent animationType="slide" onRequestClose={() => setShowLlmModal(false)}>
+        <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setShowLlmModal(false)}>
+          <View style={styles.sheet} onStartShouldSetResponder={() => true}>
+            <View style={styles.topRow}>
+              <Text style={styles.sheetTitle}>🤖 AI Models & LLM Engines</Text>
+              <TouchableOpacity onPress={() => setShowLlmModal(false)} style={styles.closeBtn}>
+                <Text style={{ color: md3Colors.outline, fontSize: 16 }}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.cardSub}>Select your preferred AI model engine for natural language parsing.</Text>
+
+            <View style={styles.providerGrid}>
+              {(['gemini', 'groq', 'openrouter', 'openai', 'anthropic'] as Provider[]).map((p) => (
+                <M3Chip
+                  key={p}
+                  label={PROVIDER_DISPLAY[p]}
+                  selected={provider === p}
+                  onPress={() => {
+                    const defaultModel = QUICK_MODELS[p]?.[0]?.id || p;
+                    handleSaveSettings(p, defaultModel);
+                  }}
+                />
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>Active Model Selection:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+              {(QUICK_MODELS[provider] || []).map((m) => (
+                <TouchableOpacity
+                  key={m.id}
+                  style={[styles.modelChip, model === m.id && styles.modelChipActive]}
+                  onPress={() => handleSaveSettings(provider, m.id)}
+                >
+                  <Text style={[styles.modelChipText, model === m.id && styles.modelChipTextActive]}>{m.label}</Text>
+                  {m.free && <Text style={styles.freeBadgeText}>FREE</Text>}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <Text style={styles.hintText}>{PROVIDER_HINTS[provider]}</Text>
+
+            <M3Button
+              label={testing ? 'Testing Connection...' : '⚡ Test AI Connection'}
+              onPress={handleTestConnection}
+              variant="tonal"
+              disabled={testing}
+            />
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </ScrollView>
   );
 }
@@ -337,5 +461,32 @@ const styles = StyleSheet.create({
     color: md3Colors.outline,
     fontStyle: 'italic',
     marginBottom: 14,
+  },
+  overlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: md3Colors.surfaceContainer,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: md3Colors.outlineVariant,
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  sheetTitle: {
+    ...md3Typography.titleMedium,
+    color: md3Colors.onSurface,
+    fontWeight: '800',
+  },
+  closeBtn: {
+    padding: 6,
   },
 });

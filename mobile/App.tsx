@@ -18,6 +18,8 @@ import PantryTab from './src/components/PantryTab';
 import TimelineTab from './src/components/TimelineTab';
 import SettingsTab from './src/components/SettingsTab';
 import NotificationManagerScreen from './src/components/NotificationManagerScreen';
+import AlarmHubScreen from './src/components/AlarmHubScreen';
+import NotificationHubTab from './src/components/NotificationHubTab';
 import AppNavigator from './src/navigation/AppNavigator';
 import { TabType } from './src/navigation/types';
 import { md3Colors, md3Typography } from './src/theme';
@@ -28,9 +30,12 @@ export default function App() {
   const [initialChatPrefix, setInitialChatPrefix] = useState<string | null>(null);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [isNotifManagerOpen, setIsNotifManagerOpen] = useState(false);
+  const [isAlarmHubOpen, setIsAlarmHubOpen] = useState(false);
 
   const { width } = useWindowDimensions();
   const isDesktop = width > 768;
+
+  const isFullScreenView = isNotifManagerOpen || isAlarmHubOpen;
 
   // Safely track Software Keyboard visibility to hide Bottom Navigation Bar when typing
   useEffect(() => {
@@ -55,6 +60,10 @@ export default function App() {
   // Standard Mobile Android Back Navigation Handler
   useEffect(() => {
     const onBackPress = () => {
+      if (isAlarmHubOpen) {
+        setIsAlarmHubOpen(false);
+        return true;
+      }
       if (isNotifManagerOpen) {
         setIsNotifManagerOpen(false);
         return true;
@@ -68,7 +77,7 @@ export default function App() {
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [activeTab, isNotifManagerOpen]);
+  }, [activeTab, isNotifManagerOpen, isAlarmHubOpen]);
 
   function handleQuickLogFromHome(prefix: string) {
     setInitialChatPrefix(prefix);
@@ -82,11 +91,11 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.safeArea} edges={isNotifManagerOpen ? ['right', 'left', 'bottom'] : ['top', 'right', 'left', 'bottom']}>
+      <SafeAreaView style={styles.safeArea} edges={isFullScreenView ? ['right', 'left', 'bottom'] : ['top', 'right', 'left', 'bottom']}>
         <StatusBar barStyle="light-content" translucent={true} backgroundColor="transparent" />
 
-        {/* Material 3 Top App Bar (Hidden when Notification Manager is Open) */}
-        {!isNotifManagerOpen && (
+        {/* Material 3 Top App Bar (Rendered ONLY on Home Page) */}
+        {activeTab === 'home' && !isFullScreenView && (
           <View style={styles.topAppBar}>
             <View style={styles.headerInner}>
               <TouchableOpacity onPress={() => setActiveTab('home')} style={styles.brandRow} activeOpacity={0.8}>
@@ -116,7 +125,9 @@ export default function App() {
         {/* Body Viewport */}
         <View style={styles.bodyWrapper}>
           <View style={styles.bodyContent}>
-            {isNotifManagerOpen ? (
+            {isAlarmHubOpen ? (
+              <AlarmHubScreen onBack={() => setIsAlarmHubOpen(false)} />
+            ) : isNotifManagerOpen ? (
               <NotificationManagerScreen onBack={() => setIsNotifManagerOpen(false)} />
             ) : (
               <>
@@ -133,18 +144,26 @@ export default function App() {
                   />
                 )}
                 {activeTab === 'analytics' && <AnalyticsTab key={logTrigger} />}
+                {activeTab === 'notifications' && (
+                  <NotificationHubTab onOpenAlarmHub={() => setIsAlarmHubOpen(true)} />
+                )}
                 {activeTab === 'pantry' && <PantryTab />}
                 {activeTab === 'timeline' && <TimelineTab key={logTrigger} />}
                 {activeTab === 'settings' && (
-                  <SettingsTab onOpenNotifManager={() => setIsNotifManagerOpen(true)} />
+                  <SettingsTab
+                    onOpenNotifManager={() => setIsNotifManagerOpen(true)}
+                    onOpenAlarmHub={() => setIsAlarmHubOpen(true)}
+                    onOpenJournal={() => setActiveTab('timeline')}
+                    onOpenPantry={() => setActiveTab('pantry')}
+                  />
                 )}
               </>
             )}
           </View>
         </View>
 
-        {/* Mobile Material 3 Bottom Navigation Bar (Hidden when keyboard or Notification Manager is open) */}
-        {!isDesktop && !isKeyboardVisible && !isNotifManagerOpen && (
+        {/* Mobile Material 3 Bottom Navigation Bar (Hidden when keyboard or full screen is open) */}
+        {!isDesktop && !isKeyboardVisible && !isFullScreenView && (
           <AppNavigator
             activeTab={activeTab}
             onTabChange={handleTabChange}

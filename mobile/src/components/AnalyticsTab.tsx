@@ -337,6 +337,41 @@ export default function AnalyticsTab() {
             </View>
           </M3Card>
 
+          {/* Phase 9: AI Financial Advisor & Monthly Budget Caps */}
+          <M3Card variant="filled" style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <Text style={styles.cardTitle}>💰 Financial Budget Caps</Text>
+              <View style={[styles.budgetBadge, { backgroundColor: 'rgba(16,185,129,0.15)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10 }]}>
+                <Text style={{ color: '#10B981', fontSize: 11, fontWeight: 'bold' }}>🟢 On Track</Text>
+              </View>
+            </View>
+            <Text style={styles.cardSub}>Monthly Category Spending Limits & Threshold Warnings</Text>
+
+            <View style={styles.budgetRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.budgetName}>🛒 Groceries & Dining</Text>
+                <Text style={styles.budgetAmount}>$240 spent / $300 limit</Text>
+              </View>
+              <Text style={styles.budgetPercent}>80%</Text>
+            </View>
+
+            <View style={styles.budgetTrack}>
+              <View style={[styles.budgetProgress, { width: '80%', backgroundColor: '#F59E0B' }]} />
+            </View>
+
+            <View style={[styles.budgetRow, { marginTop: 12 }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.budgetName}>💳 Shopping & Tech</Text>
+                <Text style={styles.budgetAmount}>$120 spent / $250 limit</Text>
+              </View>
+              <Text style={styles.budgetPercent}>48%</Text>
+            </View>
+
+            <View style={styles.budgetTrack}>
+              <View style={[styles.budgetProgress, { width: '48%', backgroundColor: '#10B981' }]} />
+            </View>
+          </M3Card>
+
           {/* Material 3 Category Breakdown Bars */}
           <M3Card variant="outlined" style={styles.breakdownCard}>
             <Text style={styles.cardHeaderTitle}>📊 Category Breakdown</Text>
@@ -477,4 +512,41 @@ const styles = StyleSheet.create({
   barCountText: { ...md3Typography.labelSmall, color: md3Colors.onSurfaceVariant },
   barTrack: { height: 8, backgroundColor: md3Colors.surfaceContainer, borderRadius: 4, overflow: 'hidden' },
   barFill: { height: '100%', borderRadius: 4 },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  budgetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  budgetName: {
+    ...md3Typography.labelSmall,
+    color: md3Colors.onSurface,
+    fontWeight: 'bold',
+  },
+  budgetAmount: {
+    fontSize: 11,
+    color: md3Colors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  budgetPercent: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: md3Colors.primary,
+  },
+  budgetTrack: {
+    height: 8,
+    backgroundColor: md3Colors.surfaceContainerHighest,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  budgetProgress: {
+    height: '100%',
+    borderRadius: 4,
+  },
 });

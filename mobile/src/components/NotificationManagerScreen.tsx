@@ -147,10 +147,6 @@ export default function NotificationManagerScreen({ onBack }: NotificationManage
       {/* Immersive Dark Hero Header */}
       <View style={styles.heroHeader}>
         <View style={styles.topAppBarRow}>
-          <TouchableOpacity style={styles.backIconButton} onPress={onBack} activeOpacity={0.8}>
-            <Text style={styles.backIconText}>←</Text>
-          </TouchableOpacity>
-
           <Text style={styles.topAppBarTitle}>Notification Control Center</Text>
         </View>
 
@@ -254,10 +250,8 @@ export default function NotificationManagerScreen({ onBack }: NotificationManage
             <View key={item.id} style={styles.alarmItemRow}>
               <View style={styles.alarmTimeBadge}>
                 <Text style={styles.alarmTimeText}>
-                  {item.hour !== undefined ? item.hour.toString().padStart(2, '0') : '--'}:
-                  {item.minute !== undefined ? item.minute.toString().padStart(2, '0') : '00'}
+                  {item.timeLabel ? item.timeLabel : `${item.hour !== undefined ? item.hour.toString().padStart(2, '0') : '--'}:${item.minute !== undefined ? item.minute.toString().padStart(2, '0') : '00'}`}
                 </Text>
-                <Text style={styles.alarmAmPmText}>DAILY</Text>
               </View>
 
               <View style={{ flex: 1, marginLeft: 12 }}>

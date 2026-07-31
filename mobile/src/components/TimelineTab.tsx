@@ -17,22 +17,42 @@ import CategoryBadge from './ui/CategoryBadge';
 import M3Card from './ui/m3/M3Card';
 import M3Chip from './ui/m3/M3Chip';
 
+let GLOBAL_TIMELINE_CACHE: Record<string, Entry[]> = {};
+let GLOBAL_LAST_FETCH_TIME: number = 0;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
 export default function TimelineTab() {
-  const [logs, setLogs] = useState<Entry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const cachedLogs = GLOBAL_TIMELINE_CACHE[selectedCategory] || [];
+  const [logs, setLogs] = useState<Entry[]>(cachedLogs);
+  const [loading, setLoading] = useState(cachedLogs.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
   useEffect(() => {
-    fetchTimeline();
+    fetchTimeline(false);
   }, [selectedCategory]);
 
-  async function fetchTimeline() {
+  async function fetchTimeline(forceRefresh: boolean = false) {
+    const now = Date.now();
+    const isCacheExpired = now - GLOBAL_LAST_FETCH_TIME > ONE_HOUR_MS;
+    const currentCached = GLOBAL_TIMELINE_CACHE[selectedCategory] || [];
+
+    // If cache is valid (< 1 hour) and not a manual refresh, use global cache instantly! (0 Supabase calls)
+    if (!forceRefresh && currentCached.length > 0 && !isCacheExpired) {
+      setLogs(currentCached);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
     try {
-      setLoading(true);
+      if (currentCached.length === 0) setLoading(true);
       const res = await queryEntries(selectedCategory === 'all' ? undefined : selectedCategory, 100);
-      setLogs(res.entries || []);
+      const data = res.entries || [];
+      GLOBAL_TIMELINE_CACHE[selectedCategory] = data;
+      GLOBAL_LAST_FETCH_TIME = now;
+      setLogs(data);
     } catch (err: any) {
       console.log('Error loading timeline:', err.message);
     } finally {
@@ -106,7 +126,7 @@ export default function TimelineTab() {
           data={filteredLogs}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchTimeline(); }} tintColor={md3Colors.primary} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchTimeline(true); }} tintColor={md3Colors.primary} />}
           renderItem={({ item }) => (
             <M3Card variant="filled" style={styles.logCard}>
               <View style={styles.cardHeader}>
