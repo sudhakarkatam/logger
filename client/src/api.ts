@@ -1,4 +1,4 @@
-import type { MessageResponse, EntriesResponse, WeekData, LLMSettings } from './types';
+import type { MessageResponse, EntriesResponse, WeekData, LLMSettings, ProviderInfo } from './types';
 
 const SUPABASE_URL = 'https://szfjzwltuhbpobkjpobj.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN6Zmp6d2x0dWhicG9ia2pwb2JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2NjMwOTYsImV4cCI6MjA5OTIzOTA5Nn0.qcMhipSeeCryChFDp904tpZLjpmyjkqHqg3TGa0hEMw';
@@ -172,17 +172,18 @@ export async function getWeekData(userId = 1, days = 7, generateDigest = false):
 
 export async function getSettings(): Promise<LLMSettings> {
   const local = getLocalSettings();
-  const availableProviders = [
-    { id: 'gemini', name: 'Google Gemini', defaultModel: 'gemini-2.0-flash' },
-    { id: 'groq', name: 'Groq (Llama)', defaultModel: 'llama-3.3-70b-versatile' },
-    { id: 'openrouter', name: 'OpenRouter', defaultModel: 'openrouter/free' },
-    { id: 'openai', name: 'OpenAI (GPT)', defaultModel: 'gpt-4o-mini' },
-    { id: 'anthropic', name: 'Anthropic Claude', defaultModel: 'claude-3-5-haiku-latest' }
+  const availableProviders: ProviderInfo[] = [
+    { id: 'gemini', defaultModel: 'gemini-2.0-flash', envVar: 'GEMINI_API_KEY', hasEnvKey: true },
+    { id: 'groq', defaultModel: 'openai/gpt-oss-120b', envVar: 'GROQ_API_KEY', hasEnvKey: true },
+    { id: 'openrouter', defaultModel: 'openrouter/free', envVar: 'OPENROUTER_API_KEY', hasEnvKey: true },
+    { id: 'openai', defaultModel: 'gpt-4o-mini', envVar: 'OPENAI_API_KEY', hasEnvKey: true },
+    { id: 'anthropic', defaultModel: 'claude-3-5-haiku-latest', envVar: 'ANTHROPIC_API_KEY', hasEnvKey: true }
   ];
 
   return {
     provider: local.provider as any,
     model: local.model,
+    hasApiKey: true,
     availableProviders
   };
 }

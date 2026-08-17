@@ -22,8 +22,8 @@ const ENV_KEY_MAP: Record<string, string> = {
 
 const DEFAULT_MODEL_MAP: Record<string, string> = {
   gemini: 'gemini-2.0-flash',
-  groq: 'llama-3.3-70b-versatile',
-  groq2: 'llama-3.3-70b-versatile',
+  groq: 'openai/gpt-oss-120b',
+  groq2: 'openai/gpt-oss-120b',
   openrouter: 'openrouter/free',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-3-5-haiku-latest',

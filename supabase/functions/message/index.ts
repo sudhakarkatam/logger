@@ -24,8 +24,8 @@ const ENV_KEY_MAP: Record<string, string> = {
 
 const DEFAULT_MODEL_MAP: Record<string, string> = {
   gemini: 'gemini-2.0-flash',
-  groq: 'llama-3.3-70b-versatile',
-  groq2: 'llama-3.3-70b-versatile',
+  groq: 'openai/gpt-oss-120b',
+  groq2: 'openai/gpt-oss-120b',
   openrouter: 'openrouter/free',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-3-5-haiku-latest',
@@ -939,11 +939,10 @@ Return ONLY this JSON object. Do not include markdown code block formatting or e
               const fieldLabel = parsedParams.field ? ` of ${parsedParams.field}` : '';
               const filterLabel = parsedParams.filter_key ? ` (filtered by ${parsedParams.filter_key} = ${parsedParams.filter_val})` : '';
 
-              aggregateStatsContext = `AGGREGATE DATABASE CALCULATIONS SUMMARY (100% MATHEMATICALLY ACCURATE):
+              aggregateStatsContext = `AGGREGATE DATABASE CALCULATIONS SUMMARY:
 - Metric: ${opName}${fieldLabel}${filterLabel} over the past ${parsedParams.days} days
-- Exact Computed Value: ${statsVal}
-- Instruction: Use this exact value as the absolute ground-truth for your response. Do not hallucinate or try to count or recalculate it yourself.
-- Formatting Override (CRITICAL): If the timeframe is large (7+ days) or the number of entries is high (more than 15 items), you MUST NOT list individual logs or draw a table detailing every individual log, UNLESS the user explicitly asks you in their query to list, show, or display the entries. Otherwise, simply give a direct conversational answer showing the final calculated number. If they ask for a breakdown, summarize only by high-level groups, but never print a long list of individual transactions.`;
+- Computed Metric Value: ${statsVal}
+- Instruction: Use this metric value as primary quantitative guidance, but always verify and cross-reference with any matching individual log entries in the history context below.`;
               console.log('[serve] Aggregate stats injected successfully:', statsVal);
             }
           }
@@ -986,21 +985,50 @@ If the query is a general lookup, planning, or is not category-specific, return 
       let semanticMatches: any[] = [];
       if (queryVector) {
         const rpcParams: any = {
+          query_text: effectiveQuery,
           query_embedding: queryVector,
-          match_threshold: 0.15,
-          match_count: 15,
+          match_threshold: 0.10,
+          match_count: 20,
           filter_categories: targetCategories
         };
         if (hashtags.length > 0) {
           rpcParams.filter_tags = hashtags;
         }
 
-        const { data: matches, error: rpcErr } = await supabaseClient.rpc('match_entries', rpcParams);
+        const { data: matches, error: rpcErr } = await supabaseClient.rpc('hybrid_match_entries', rpcParams);
         if (rpcErr) {
-          console.error('[serve] match_entries RPC returned error:', rpcErr.message);
+          console.error('[serve] hybrid_match_entries RPC returned error:', rpcErr.message);
+          const { data: fallbackMatches } = await supabaseClient.rpc('match_entries', rpcParams);
+          if (fallbackMatches) semanticMatches = fallbackMatches;
         } else if (matches) {
           semanticMatches = matches;
         }
+      }
+
+      // Full-Text Search (FTS) Keyword Retrieval (Hybrid Search Layer)
+      let ftsMatches: any[] = [];
+      try {
+        const cleanedQueryWords = effectiveQuery.replace(/[^\w\s]/gi, ' ').trim().split(/\s+/).filter(w => w.length >= 3 && !['how', 'many', 'much', 'times', 'have', 'past', 'days', 'show', 'tell', 'list', 'what', 'when', 'where', 'with', 'from', 'this', 'that', 'were', 'check'].includes(w.toLowerCase()));
+        if (cleanedQueryWords.length > 0) {
+          const tsQueryStr = cleanedQueryWords.join(' | ');
+          console.log('[serve] Executing FTS hybrid keyword retrieval for:', tsQueryStr);
+          const { data: ftsData, error: ftsErr } = await supabaseClient
+            .from('entries')
+            .select('id, entry_time, category, raw_text, data, tags, event_date')
+            .eq('user_id', userId)
+            .textSearch('fts', tsQueryStr, { config: 'english' })
+            .order('entry_time', { ascending: false })
+            .limit(30);
+
+          if (ftsErr) {
+            console.error('[serve] FTS query error:', ftsErr.message);
+          } else if (ftsData) {
+            ftsMatches = ftsData;
+            console.log(`[serve] FTS hybrid retrieval returned ${ftsMatches.length} matches`);
+          }
+        }
+      } catch (ftsErr: any) {
+        console.error('[serve] FTS hybrid search exception:', ftsErr.message);
       }
 
       // Load recent logs to ensure today's logs and general timeline are always present
@@ -1100,6 +1128,7 @@ If the query is a general lookup, planning, or is not category-specific, return 
       // Merge and deduplicate by entry ID
       const mergedMap = new Map<string, any>();
       semanticMatches.forEach((m) => mergedMap.set(m.id, m));
+      ftsMatches.forEach((f) => mergedMap.set(f.id, f));
       recentLogs.forEach((r) => mergedMap.set(r.id, r));
       calendarEvents.forEach((c) => mergedMap.set(c.id, c));
 

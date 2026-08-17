@@ -5,6 +5,7 @@ import MessageBubble from './MessageBubble';
 
 const QUICK_MODELS: Record<string, { id: string; label: string; free: boolean }[]> = {
   groq: [
+    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (OpenAI)', free: true },
     { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', free: true },
     { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', free: true },
     { id: 'gemma2-9b-it', label: 'Gemma 2 9B', free: true },
