@@ -166,7 +166,9 @@ export async function retrieveContext(
   if (hashtags.length > 0) {
     recentLogsPromise = recentLogsPromise.contains('tags', hashtags);
   }
-  const recentLogsFinal = recentLogsPromise.order('entry_time', { ascending: false }).limit(20);
+  const isSpecificCategory = route.targetCategories.length > 0 && route.targetCategories.length < 6;
+  const recentLimit = isSpecificCategory ? 100 : 30;
+  const recentLogsFinal = recentLogsPromise.order('entry_time', { ascending: false }).limit(recentLimit);
 
   // 5. Parallel Task E: Conditional Calendar Events (only for date queries)
   const isDateQuery = /(today|tomorrow|yesterday|this week|next|schedule|event|plan|cal|upcoming|test|exam|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))/i.test(lowerQuery);

@@ -95,7 +95,8 @@ serve(async (req) => {
     if (intent === 'QUERY') {
       const effectiveQuery = await rewriteFollowUp(config, trimmedText, history, callLLM);
       const retrieved = await retrieveContext(effectiveQuery, route, userId, supabaseClient);
-      const rerankLimit = route.isQuantitative ? 30 : 10;
+      const isSpecificCategory = route.targetCategories.length > 0 && route.targetCategories.length < 6;
+      const rerankLimit = (route.isQuantitative || isSpecificCategory) ? 50 : 15;
       const rerankedLogs = rerankLogs(effectiveQuery, retrieved.candidates, rerankLimit);
       const answer = await synthesizeQueryAnswer(config, effectiveQuery, rerankedLogs, retrieved, history);
 

@@ -52,7 +52,15 @@ export function rerankLogs(query: string, candidates: CandidateLog[], limit: num
       }
     });
 
-    // 2. Exact phrase bonus
+    // 2. Category match bonus (ensures all category entries are retained when exploring that category)
+    if (item.category) {
+      const cat = item.category.toLowerCase();
+      if (lowerQuery.includes(cat) || lowerQuery.includes(cat + 's') || (cat === 'expense' && (lowerQuery.includes('spend') || lowerQuery.includes('spent') || lowerQuery.includes('cost') || lowerQuery.includes('bill')))) {
+        termScore += 5;
+      }
+    }
+
+    // 3. Exact phrase bonus
     if (queryTerms.length > 1 && textToMatch.includes(lowerQuery)) {
       termScore += 4;
     }

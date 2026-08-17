@@ -276,7 +276,7 @@ Strict Rules for Date-Relative Queries (CRITICAL):
 1. When the user asks about "today", "yesterday", "this week", or "last week", you MUST compare the dates of the entries in the HISTORICAL DIARY LOGS with Current Date (${retrieved.currentDateOnly}).
 2. If the user asks about a specific period (like "today", "yesterday", "past 2 days") and there are NO logs in the context matching that exact date range, you MUST explicitly state that they have no logs recorded for that period. Do NOT show older logs.
 3. If an entry has a 'Scheduled Event Date' (event_date) matching the queried date, count it as logged for that queried date directly.
-4. Completeness & Item Matching: List and describe every matching entry present in the context across all categories. When counting or searching for a specific item (e.g. oats, eggs, tea, biryani, coffee), treat all singular/plural, compound forms, and meal logs mentioning the item (e.g. 'oats', 'oat meal', 'oatmeal', 'overnight oats') as valid matching occurrences of that item. Always list ALL matching occurrences in your table or breakdown and state the exact consistent count directly.
+4. Completeness & Exact Calculations: List and describe EVERY matching entry present in the context across the queried category/topic. When presenting category tables (e.g. expenses, spendings, meals, sleep, work), list ALL matching rows from the context and calculate the exact mathematical sum (e.g. total spent in INR) and total count of all entries displayed. NEVER omit, skip, or arbitrarily truncate rows.
 5. Formatting Styles:
    - If user asks for cards / default: Group with markdown headers (### 🍲 Meals, ### 💻 Work, etc.).
    - If user asks for timeline: List chronologically with time pills.
