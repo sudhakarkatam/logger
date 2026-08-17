@@ -60,7 +60,7 @@ export async function getEmbedding(text: string): Promise<number[] | null> {
 export function buildContextualPayload(rawText: string, category: string, data: any, entryTime?: string): string {
   const dateObj = new Date(entryTime || Date.now());
   const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
-  const dateStr = dateObj.toISOString().split('T')[0];
+  const dateStr = getIndianDateStr(dateObj);
   const timeStr = dateObj.toLocaleTimeString('en-US', { timeZone: timezone, hour: '2-digit', minute: '2-digit' });
 
   let details = '';
@@ -273,7 +273,7 @@ export async function retrieveContext(
   if (summaryRes?.data && summaryRes.data.length > 0) {
     const dailySummaries: Record<string, { calories: number, sleep_hours: number, expense_inr: number, exercises: string[] }> = {};
     summaryRes.data.forEach((row: any) => {
-      const dateStr = row.entry_time.split('T')[0];
+      const dateStr = getIndianDateStr(row.entry_time);
       if (!dailySummaries[dateStr]) {
         dailySummaries[dateStr] = { calories: 0, sleep_hours: 0, expense_inr: 0, exercises: [] };
       }
@@ -340,7 +340,7 @@ ${recipesStr}`;
   let historyContext = '';
   if (mergedEntries.length > 0) {
     historyContext = mergedEntries.map((e: any) => {
-      const entryDateStr = e.entry_time.split('T')[0];
+      const entryDateStr = getIndianDateStr(e.entry_time);
       const d1 = new Date(currentDateOnly + 'T00:00:00');
       const d2 = new Date(entryDateStr + 'T00:00:00');
       const diffTime = d2.getTime() - d1.getTime();

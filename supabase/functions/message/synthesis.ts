@@ -206,7 +206,7 @@ export async function synthesizeQueryAnswer(
 ): Promise<string> {
   const rerankedContextStr = rerankedLogs.length > 0
     ? rerankedLogs.map((e: any) => {
-        const entryDateStr = e.entry_time.split('T')[0];
+        const entryDateStr = getIndianDateStr(e.entry_time);
         const d1 = new Date(retrieved.currentDateOnly + 'T00:00:00');
         const d2 = new Date(entryDateStr + 'T00:00:00');
         const diffTime = d2.getTime() - d1.getTime();
@@ -368,7 +368,7 @@ export async function synthesizeLogEntry(
   }
   if (recentEntries && recentEntries.length > 0) {
     userMsg += `\n\nRECENT LOGS:\n` + recentEntries.map((e: any, i: number) =>
-      `${i + 1}. [${e.category}] Date: ${e.entry_time.split('T')[0]} | LOG_ID: ${e.id} | Raw: ${e.raw_text} | Tags: ${JSON.stringify(e.tags || [])} | Data: ${JSON.stringify(e.data)}`
+      `${i + 1}. [${e.category}] Date: ${getIndianDateStr(e.entry_time)} | LOG_ID: ${e.id} | Raw: ${e.raw_text} | Tags: ${JSON.stringify(e.tags || [])} | Data: ${JSON.stringify(e.data)}`
     ).join('\n');
   }
 

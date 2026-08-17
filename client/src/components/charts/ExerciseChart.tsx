@@ -1,6 +1,8 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import type { Entry, ExerciseData } from '../../types';
 
+import { getIndianDateStr } from '../../utils/dateUtils';
+
 interface Props {
   entries: Entry[];
 }
@@ -10,7 +12,8 @@ export default function ExerciseChart({ entries }: Props) {
   const dayMap: Record<string, { sessions: number; totalMinutes: number; activities: string[] }> = {};
 
   entries.forEach(entry => {
-    const day = entry.entry_time.split('T')[0];
+    const day = getIndianDateStr(entry.entry_time);
+    if (!day) return;
     const data = entry.data as unknown as ExerciseData;
     if (!dayMap[day]) dayMap[day] = { sessions: 0, totalMinutes: 0, activities: [] };
     dayMap[day].sessions++;

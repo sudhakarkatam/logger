@@ -1,6 +1,8 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { Entry, MealData } from '../../types';
 
+import { getIndianDateStr } from '../../utils/dateUtils';
+
 interface Props {
   entries: Entry[];
 }
@@ -17,7 +19,8 @@ export default function MealChart({ entries }: Props) {
   const dayMap: Record<string, { breakfast: number; lunch: number; dinner: number; snack: number }> = {};
 
   entries.forEach(entry => {
-    const day = entry.entry_time.split('T')[0];
+    const day = getIndianDateStr(entry.entry_time);
+    if (!day) return;
     if (!dayMap[day]) {
       dayMap[day] = { breakfast: 0, lunch: 0, dinner: 0, snack: 0 };
     }

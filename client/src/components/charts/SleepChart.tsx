@@ -1,6 +1,8 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import type { Entry, SleepData } from '../../types';
 
+import { getIndianDateStr } from '../../utils/dateUtils';
+
 interface Props {
   entries: Entry[];
 }
@@ -16,9 +18,9 @@ export default function SleepChart({ entries }: Props) {
     .sort((a, b) => a.entry_time.localeCompare(b.entry_time))
     .map(entry => {
       const data = entry.data as unknown as SleepData;
-      const day = entry.entry_time.split('T')[0];
+      const day = getIndianDateStr(entry.entry_time);
       return {
-        date: new Date(day).toLocaleDateString('en-US', { weekday: 'short' }),
+        date: new Date(day + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' }),
         hours: data?.hours || 0,
         quality: data?.quality || 'fair',
       };

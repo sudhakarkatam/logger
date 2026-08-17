@@ -7,6 +7,7 @@ import ExerciseChart from './charts/ExerciseChart';
 import SleepChart from './charts/SleepChart';
 import ExpenseChart from './charts/ExpenseChart';
 import WeekSummaryCard from './charts/WeekSummaryCard';
+import { getIndianDateStr } from '../utils/dateUtils';
 
 export default function DashboardView() {
   const [weekData, setWeekData] = useState<WeekData | null>(null);
@@ -201,11 +202,13 @@ export default function DashboardView() {
 
     const byDay: Record<string, Entry[]> = {};
     entries.forEach(entry => {
-      const day = (entry.entry_time || new Date().toISOString()).split('T')[0];
-      if (!byDay[day]) {
-        byDay[day] = [];
+      const day = getIndianDateStr(entry.entry_time);
+      if (day) {
+        if (!byDay[day]) {
+          byDay[day] = [];
+        }
+        byDay[day].push(entry);
       }
-      byDay[day].push(entry);
     });
 
     const stats = {
@@ -228,14 +231,17 @@ export default function DashboardView() {
     
     const dates = weekData.entries
       .filter(e => e.category === category && (!filterFn || filterFn(e)))
-      .map(e => (e.entry_time || e.created_at || '').split('T')[0]);
+      .map(e => getIndianDateStr(e.entry_time || e.created_at))
+      .filter(Boolean);
       
     if (dates.length === 0) return 0;
     
     const uniqueDates = Array.from(new Set(dates)).sort((a, b) => b.localeCompare(a));
     
-    const todayStr = new Date().toISOString().split('T')[0];
-    const yesterdayStr = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const todayStr = getIndianDateStr();
+    const yesterdayDate = new Date();
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayStr = getIndianDateStr(yesterdayDate);
     
     const mostRecent = uniqueDates[0];
     if (mostRecent !== todayStr && mostRecent !== yesterdayStr) {

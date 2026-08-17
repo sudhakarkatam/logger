@@ -1,6 +1,8 @@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts';
 import type { Entry, MoodData } from '../../types';
 
+import { getIndianDateStr } from '../../utils/dateUtils';
+
 interface Props {
   entries: Entry[];
 }
@@ -12,6 +14,7 @@ export default function MoodChart({ entries }: Props) {
       const data = entry.data as unknown as MoodData;
       return {
         time: new Date(entry.entry_time).toLocaleDateString('en-US', {
+          timeZone: 'Asia/Kolkata',
           weekday: 'short',
           hour: 'numeric',
         }),
@@ -25,7 +28,8 @@ export default function MoodChart({ entries }: Props) {
   // Average mood per day
   const avgByDay: Record<string, { total: number; count: number; moods: string[] }> = {};
   entries.forEach(entry => {
-    const day = entry.entry_time.split('T')[0];
+    const day = getIndianDateStr(entry.entry_time);
+    if (!day) return;
     const data = entry.data as unknown as MoodData;
     if (!avgByDay[day]) avgByDay[day] = { total: 0, count: 0, moods: [] };
     avgByDay[day].total += data?.intensity || 5;
