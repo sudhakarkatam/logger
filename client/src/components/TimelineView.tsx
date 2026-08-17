@@ -73,23 +73,23 @@ export default function TimelineView() {
     const items = [];
 
     if (entry.category === 'meal') {
-      if (entry.data.meal_type) items.push(<span key="type" className="meta-badge-text">Type: <strong>{entry.data.meal_type}</strong></span>);
-      if (entry.data.items) items.push(<span key="items" className="meta-badge-text">Items: {Array.isArray(entry.data.items) ? entry.data.items.join(', ') : entry.data.items}</span>);
-      if (entry.data.calories) items.push(<span key="cal" className="meta-badge-text">Est. Cal: <strong>{entry.data.calories} kcal</strong></span>);
+      if (entry.data.meal_type) items.push(<span key="type" className="meta-badge-text">Type: <strong>{String(entry.data.meal_type)}</strong></span>);
+      if (entry.data.items) items.push(<span key="items" className="meta-badge-text">Items: {Array.isArray(entry.data.items) ? entry.data.items.join(', ') : String(entry.data.items)}</span>);
+      if (entry.data.calories) items.push(<span key="cal" className="meta-badge-text">Est. Cal: <strong>{String(entry.data.calories)} kcal</strong></span>);
     } else if (entry.category === 'expense') {
-      if (entry.data.amount) items.push(<span key="amt" className="meta-badge-text" style={{ color: 'var(--cat-expense)', fontWeight: 600 }}>Amount: ₹{entry.data.amount}</span>);
-      if (entry.data.item) items.push(<span key="item" className="meta-badge-text">Item: {entry.data.item}</span>);
+      if (entry.data.amount) items.push(<span key="amt" className="meta-badge-text" style={{ color: 'var(--cat-expense)', fontWeight: 600 }}>Amount: ₹{String(entry.data.amount)}</span>);
+      if (entry.data.item) items.push(<span key="item" className="meta-badge-text">Item: {String(entry.data.item)}</span>);
     } else if (entry.category === 'sleep') {
-      if (entry.data.hours) items.push(<span key="hrs" className="meta-badge-text">Duration: <strong>{entry.data.hours} hours</strong></span>);
+      if (entry.data.hours) items.push(<span key="hrs" className="meta-badge-text">Duration: <strong>{String(entry.data.hours)} hours</strong></span>);
     } else if (entry.category === 'exercise') {
-      if (entry.data.activity) items.push(<span key="act" className="meta-badge-text">Activity: <strong>{entry.data.activity}</strong></span>);
-      if (entry.data.duration_minutes) items.push(<span key="dur" className="meta-badge-text">Duration: {entry.data.duration_minutes} min</span>);
+      if (entry.data.activity) items.push(<span key="act" className="meta-badge-text">Activity: <strong>{String(entry.data.activity)}</strong></span>);
+      if (entry.data.duration_minutes) items.push(<span key="dur" className="meta-badge-text">Duration: {String(entry.data.duration_minutes)} min</span>);
     } else if (entry.category === 'mood') {
-      if (entry.data.intensity) items.push(<span key="int" className="meta-badge-text">Intensity: <strong>{entry.data.intensity}/10</strong></span>);
+      if (entry.data.intensity) items.push(<span key="int" className="meta-badge-text">Intensity: <strong>{String(entry.data.intensity)}/10</strong></span>);
     } else if (entry.category === 'water') {
-      if (entry.data.ml) items.push(<span key="ml" className="meta-badge-text">Intake: <strong>{entry.data.ml} ml</strong></span>);
+      if (entry.data.ml) items.push(<span key="ml" className="meta-badge-text">Intake: <strong>{String(entry.data.ml)} ml</strong></span>);
     } else if (entry.category === 'work') {
-      if (entry.data.duration_hours) items.push(<span key="work-hrs" className="meta-badge-text">Time: <strong>{entry.data.duration_hours} hrs</strong></span>);
+      if (entry.data.duration_hours) items.push(<span key="work-hrs" className="meta-badge-text">Time: <strong>{String(entry.data.duration_hours)} hrs</strong></span>);
     }
 
     if (items.length === 0) return null;

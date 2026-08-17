@@ -137,9 +137,9 @@ export async function queryEntries(category?: string, limit = 50): Promise<Entri
     }
 
     const data = await res.json();
-    return { data, error: null };
+    return { entries: data || [], data, error: undefined };
   } catch (err: any) {
-    return { data: null, error: err.message };
+    return { entries: [], data: null, error: err.message };
   }
 }
 

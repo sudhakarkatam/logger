@@ -261,13 +261,13 @@ export default function MessageBubble({ message, onCardActionClick, isActiveCard
             />
           </div>
         )}
-        {entry?.data?.image_url && (
+        {Boolean(entry?.data?.image_url) && (
           <div className="msg-media-attachment" style={{ marginBottom: '10px' }}>
             <img 
-              src={entry.data.image_url as string} 
+              src={entry!.data.image_url as string} 
               alt="Logged attachment" 
               className="msg-media-img" 
-              onClick={() => setActiveZoomUrl(entry.data.image_url as string)}
+              onClick={() => setActiveZoomUrl(entry!.data.image_url as string)}
             />
           </div>
         )}

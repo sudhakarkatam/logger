@@ -10,7 +10,7 @@ export interface Entry {
   created_at: string;
 }
 
-export type Category = 'meal' | 'mood' | 'exercise' | 'sleep' | 'expense' | 'other';
+export type Category = 'meal' | 'mood' | 'exercise' | 'sleep' | 'expense' | 'work' | 'water' | 'other';
 
 // ── Category-specific data shapes ──
 export interface MealData {
@@ -112,6 +112,8 @@ export interface MessageResponse {
 
 export interface EntriesResponse {
   entries: Entry[];
+  data?: Entry[] | null;
+  error?: string;
 }
 
 // ── Category metadata ──
@@ -121,5 +123,7 @@ export const CATEGORY_META: Record<Category, { icon: string; label: string; colo
   exercise: { icon: '🏃', label: 'Exercise', color: 'var(--cat-exercise)' },
   sleep:    { icon: '😴', label: 'Sleep',    color: 'var(--cat-sleep)' },
   expense:  { icon: '💰', label: 'Expense',  color: 'var(--cat-expense)' },
+  work:     { icon: '💻', label: 'Work',     color: 'var(--cat-work)' },
+  water:    { icon: '💧', label: 'Water',    color: 'var(--cat-water)' },
   other:    { icon: '📝', label: 'Other',    color: 'var(--cat-other)' },
 };

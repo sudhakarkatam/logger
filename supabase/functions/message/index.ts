@@ -1,7 +1,18 @@
+// supabase/functions/message/index.ts
+
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { GoogleGenAI } from "npm:@google/genai@1.0.0";
-import OpenAI from "npm:openai@4.56.0";
+
+import { classifyIntent, fallbackLLMClassifyIntent, rewriteFollowUp } from './classifier.ts';
+import { handleStateMachine, checkDuplicateConflict } from './state_machine.ts';
+import { retrieveContext, buildContextualPayload, getEmbedding } from './retriever.ts';
+import { rerankLogs } from './reranker.ts';
+import {
+  callLLM,
+  synthesizeQueryAnswer,
+  synthesizeChatReply,
+  synthesizeLogEntry
+} from './synthesis.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -10,292 +21,6 @@ const corsHeaders = {
 };
 
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// ── API Key Resolution (from Supabase Edge Function Secrets) ──
-
-const ENV_KEY_MAP: Record<string, string> = {
-  gemini: 'GEMINI_API_KEY',
-  groq: 'GROQ_API_KEY',
-  groq2: 'GROQ_API_KEY_2',
-  openrouter: 'OPENROUTER_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-};
-
-const DEFAULT_MODEL_MAP: Record<string, string> = {
-  gemini: 'gemini-2.0-flash',
-  groq: 'openai/gpt-oss-120b',
-  groq2: 'openai/gpt-oss-120b',
-  openrouter: 'openrouter/free',
-  openai: 'gpt-4o-mini',
-  anthropic: 'claude-3-5-haiku-latest',
-};
-
-const FALLBACK_CHAIN = ['groq', 'groq2', 'openrouter', 'gemini'];
-
-function resolveApiKey(provider: string): string {
-  const envVar = ENV_KEY_MAP[provider];
-  if (!envVar) return '';
-  return Deno.env.get(envVar) || '';
-}
-
-// ── LLM Client Callers ──
-
-async function callLLMDirect(provider: string, apiKey: string, model: string, systemPrompt: string, userMessage: string): Promise<string> {
-  if (provider === 'gemini') {
-    const ai = new GoogleGenAI({ apiKey });
-    const response = await ai.models.generateContent({
-      model,
-      contents: userMessage,
-      config: { systemInstruction: systemPrompt },
-    });
-    return response.text || '';
-  }
-
-  let baseURL = 'https://api.openai.com/v1';
-  if (provider === 'groq' || provider === 'groq2') baseURL = 'https://api.groq.com/openai/v1';
-  if (provider === 'openrouter') baseURL = 'https://openrouter.ai/api/v1';
-
-  if (provider === 'anthropic') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model,
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Anthropic API error: ${err}`);
-    }
-    const data = await res.json();
-    return data.content[0].text || '';
-  }
-
-  const client = new OpenAI({ apiKey, baseURL });
-  const completion = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
-    temperature: 0.3,
-  });
-  return completion.choices[0].message.content || '';
-}
-
-async function callLLM(config: any, systemPrompt: string, userMessage: string): Promise<string> {
-  const preferredProvider = config.provider || 'gemini';
-  const preferredModel = config.model || DEFAULT_MODEL_MAP[preferredProvider] || 'gemini-2.0-flash';
-
-  // Build fallback chain: preferred provider first, then remaining providers
-  const chain = [preferredProvider, ...FALLBACK_CHAIN.filter(p => p !== preferredProvider)];
-
-  let lastError = '';
-  for (const provider of chain) {
-    const apiKey = resolveApiKey(provider);
-    if (!apiKey) {
-      console.warn(`[callLLM] No API key configured for ${provider}, skipping.`);
-      continue;
-    }
-
-    const model = provider === preferredProvider ? preferredModel : DEFAULT_MODEL_MAP[provider] || 'gemini-2.0-flash';
-
-    try {
-      console.log(`[callLLM] Trying provider: ${provider}, model: ${model}`);
-      const result = await callLLMDirect(provider, apiKey, model, systemPrompt, userMessage);
-      if (provider !== preferredProvider) {
-        console.log(`[callLLM] ⚡ Served by fallback provider: ${provider} (${preferredProvider} was unavailable)`);
-      }
-      return result;
-    } catch (err: any) {
-      lastError = err.message || String(err);
-      console.warn(`[callLLM] ${provider} failed: ${lastError}. Trying next provider...`);
-      continue;
-    }
-  }
-
-  throw new Error(`All LLM providers failed. Last error: ${lastError}`);
-}
-
-// ── Call the Dedicated Internal 'embed' Edge Function ──
-
-async function getEmbedding(text: string): Promise<number[] | null> {
-  console.log(`[getEmbedding] Invoking internal embed Edge Function for: "${text.substring(0, 45)}..."`);
-  try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
-
-    if (!supabaseUrl) {
-      console.error('[getEmbedding] SUPABASE_URL environment variable is missing');
-      return null;
-    }
-
-    const url = `${supabaseUrl}/functions/v1/embed`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${anonKey}`,
-        'apikey': anonKey
-      },
-      body: JSON.stringify({ text }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[getEmbedding] Internal embed function returned status ${res.status}: ${errText}`);
-      return null;
-    }
-
-    const json = await res.json();
-    return json.embedding || null;
-  } catch (err: any) {
-    console.error('[getEmbedding] Failed to fetch internal embedding service:', err.message);
-    return null;
-  }
-}
-
-const timezone = 'Asia/Kolkata';
-
-function getIndianDateStr(dateInput?: Date | string): string {
-  const d = dateInput ? new Date(dateInput) : new Date();
-  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const parts = formatter.formatToParts(d);
-  const year = parts.find(p => p.type === 'year')?.value;
-  const month = parts.find(p => p.type === 'month')?.value;
-  const day = parts.find(p => p.type === 'day')?.value;
-  return `${year}-${month}-${day}`;
-}
-
-// ── Prompt Builders ──
-
-function buildSystemPrompt(timezoneStr: string): string {
-  const indianDate = getIndianDateStr();
-  const indianTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-
-  return `You are Buddy, the user's friendly personal AI companion. Parse the user's message into structured JSON.
-User Name: Sudhakar (call him Buddy or Boss in your acknowledgment).
-Location: South India.
-Timezone: Asia/Kolkata (Indian Standard Time - IST).
-Current Indian Date: ${indianDate}
-Current Indian Time (IST): ${indianTime}
-Tone: Clean, articulate, warm, supportive, and friendly. Chat like a thoughtful close friend.
-Emoji & Greeting Rule (STRICT): NEVER attach any emojis to the word Buddy or greetings (e.g. NEVER write '🤙 Buddy', 'Hey Buddy 🤙', 'Buddy 🫂', or 'Boss 🥞'). Do NOT use tacky or excessive emojis. Respond strictly in 100% clean, fluent English ONLY.
-
-Return ONLY a JSON object:
-{
-  "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
-  "entry_time": ISO 8601 datetime string,
-  "data": category-specific fields,
-  "tags": string[] or null,
-  "acknowledgment": "A warm, articulate, supportive 1-2 sentence companion reply. It MUST confirm what was logged AND include a personalized, encouraging comment or wish tailored to the content (e.g. for tired/sad mood: offer empathy and wish rest; for exercise: encourage staying active; for meals: wish a good day; for expenses/work: validate effort/value). NEVER use plain, robotic system notifications like 'Logged 1 entry' or 'I have logged your mood'. Speak like a caring friend.",
-  "needs_clarification": boolean,
-  "clarification_prompt": string or null,
-  "action": "insert" | "update" | "delete" | "cancel" | "bulk_insert",
-  "bulk_entries": [
-    {
-      "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
-      "entry_time": ISO 8601 string,
-      "data": object,
-      "raw_text": string
-    }
-  ] | null,
-  "update_entry_id": string or null,
-  "delete_entry_ids": string[] or null,
-  "event_date": "YYYY-MM-DD" or null
-}
-
-Strict Rules:
-1. Category Schemas:
-   - meal: { "meal_type": "breakfast|lunch|dinner|snack", "skipped": boolean, "items": ["item1"], "nutrition": { "calories": number, "protein_g": number, "carbs_g": number, "fat_g": number } }
-     - If the user explicitly mentions skipping a meal (e.g. "skipped lunch today", "did not eat breakfast", "skipping dinner"), set "skipped": true, "items": [], and "nutrition": null.
-     - Otherwise, set "skipped": false.
-   - sleep: { "hours": number, "quality": "good|fair|poor|null" }
-   - expense: { "amount": number, "currency": "INR", "description": "what it was for", "subcategory": "food|transport|shopping|bills|other" }
-     - For the subcategory field: map wifi bills, current bills, electricity bills, water charges, mobile phone bills, house rents, gas bills, or any bill/utilities to "bills". Map dining out, restaurant, lunch starters, snacks, coffee, tea, biryani, or online food orders to "food".
-   - mood: { "mood": "happy|sad|tired|anxious|neutral", "intensity": 1-10 }
-   - exercise: { "activity": "running|walking|gym", "duration_minutes": number, "distance_km": number|null }
-   - work: { "description": "what work was done", "project": "project/topic name or null", "duration_hours": number | null }
-     - If the user logs just "work", "worked", or "log work" without any detail, set description to "Software Laptop Work" and duration_hours to null.
-     - Extract duration in hours if specified (e.g., "worked for 5 hours" -> 5, "spent 1.5 hours in meeting" -> 1.5).
-     - If they specify details (e.g., "worked on coding", "work on slide deck", "meeting with client"), extract the description specifically.
-   - other: { "description": "text summary" }
-     - Use this category for general knowledge, reminders, plans, pending tasks, learning goals, or any facts/statements the user wants to remember.
-     - Clean the description to remove trigger phrases like "remember this", "log this", "log it", "save this", or "remind me to" from the final stored description.
-   - query: { "question": "user natural language query" }
-     - If the user asks a question about their logs (e.g., "what did I eat yesterday", "how much did I spend last week", "did I exercise on 29 july"), use this category.
-   - event_date (root field):
-     - If the user explicitly mentions a target date (future or past relative/specific date) in their message for ANY category (e.g. 'breakfast for tomorrow', 'slept 8 hours yesterday', 'wifi bill for next Monday', '29 July I have a test', 'lunch on Friday'), you MUST resolve that date into a "YYYY-MM-DD" string (using the Current Time calendar anchor reference) and save it in the "event_date" root field of the returned JSON object.
-     - This applies to ALL categories (meals, sleep, mood, expenses, exercise, other, query).
-     - Otherwise, if no specific or relative date is mentioned, set "event_date" to null.
-
-2. Clarification & Logging Friction Rules:
-   - Do NOT prompt for optional details. If sleep quality or nutrition is missing, default it to null and log it immediately. Do NOT ask for it.
-
-3. Image Logging Rules (Immediate Save & Update):
-   - Whenever an image URL is attached, ALWAYS insert the log immediately in the first turn. NEVER return needs_clarification=true on the first turn when an image is attached.
-   - If the description accompanying the image is generic (e.g. "📷 Sent a photo", "test", "upload", "image"), categorize it as "other" and set the acknowledgment to: "I've logged your photo. What is this photo about? (You can reply to describe it, or ignore this to do something else)."
-   - If the user's message is describing a recently uploaded photo (specifically replying to describe a generic raw_text like 'test' or '📷 Sent a photo' which contains an 'image_url' in its data, e.g. "it's my breakfast oatmeal"):
-     - Set "action": "update".
-     - Set "update_entry_id": The exact ID string of that recent image entry.
-     - Parse the description into its appropriate category (e.g. "meal" if they say "it's my breakfast oatmeal") and set the acknowledgment to: "Successfully updated your photo description."
-
-4. UUID Constraints (CRITICAL):
-   - When outputting "update_entry_id" or "delete_entry_ids", you MUST only extract and copy the exact 36-character UUID strings (e.g., '7c5f87b2-60be-4a5f-9e7f-7798380b2ff8') found after the 'LOG_ID: ' label in the RECENT LOGS list.
-   - NEVER hallucinate, invent, or use placeholder IDs like 'sleep_log_id_1', 'id_1', 'sleep_log_id_2', or '1'. If you cannot locate the correct UUID strings, set update_entry_id/delete_entry_ids to null.
-
-5. Deletion Safety Instructions (When user wants to remove/delete logs or duplicates):
-   - Deleting data is destructive, so you MUST ALWAYS require confirmation first. Never delete directly on the first command.
-   - First Turn (If draftContext is null):
-     - Identify the matching logs to delete by scanning their details and IDs in the RECENT LOGS list.
-     - Set "needs_clarification": true.
-     - Set "clarification_prompt": "Are you sure you want to delete [details]?"
-     - Set "action": "insert" (default).
-     - Set "delete_entry_ids": An array of one or more UUID strings of the candidates to delete.
-
-6. Explicit Hashtag Rules (Strictly User-Defined):
-   - A log only gets tags if the user explicitly typed words starting with a '#' symbol in their message (e.g. '#cheatmeal', '#fitness').
-   - Extract the tag name (without the '#' symbol, converted to lowercase) and put it in the "tags" array.
-   - If the user did not use any '#' symbols in their message, the "tags" array MUST be empty [].
-   - If the user is requesting to tag, add a hashtag, or modify a past entry (e.g., "update today breakfast as #oilfood", "add tag #chestday to my last entry", "tag my dinner as #cheatmeal"):
-     - Scan the RECENT LOGS list below. Find the most recent entry matching that description (e.g. if they say "today breakfast", find the breakfast entry).
-     - If a matching log is found:
-       - Set "action": "update".
-       - Set "update_entry_id": The exact UUID string of that matching log.
-       - Append the hashtag to the existing tags of that entry, and output the combined array in the "tags" array.
-       - Set "acknowledgment": "Successfully updated your entry with tag: #[tagname]" (where tagname is the tag being added).
-     - If no matching log is found in the RECENT LOGS for that category/day:
-       - Set "action": "insert".
-       - Set "needs_clarification": false. (NEVER ask for confirmation when fallback inserting a new entry for an update request).
-       - Create the log with the food/items described (e.g. "poori" for meal) and save the tag inside the "tags" array (e.g., ["poori"]).
-       - Set "acknowledgment": "I couldn't find a breakfast entry for today, so I created a new breakfast log with tag: #[tagname]" (where tagname is the tag being added).
-
-7. Casual Exclamations & Conversational Safety (CRITICAL):
-   - If the user's message is a casual reaction, exclamation, conversational remark, or feedback/agreement (e.g., "ooh that is remainder", "nice", "makes sense", "thanks", "ok", "correct", "wow") and does NOT contain any new metrics, food, sleep hours, or reminders they explicitly asked you to remember, you MUST NOT save it directly.
-   - Instead, set "needs_clarification": true.
-   - Set "clarification_prompt": "I noticed you said '[user text]'. Did you want me to log this as a reminder/note, or is it just a comment?"
-
-8. Compound Logging & Multi-Item / Multi-Day Splits (CRITICAL - MUST FOLLOW):
-   - If the user mentions MULTIPLE distinct loggable items, mixed categories, multiple meals, or a MULTI-DAY time span in a single message, you MUST NOT combine them into a single entry OR drop any item.
-   - You MUST extract EVERY SINGLE ITEM, meal type, and date mentioned and place them in the 'bulk_entries' array:
-     a) Multi-Day & Multi-Meal Spans: If a user specifies meals across different days or times (e.g. "yesterday morning I ate oat meals for breakfast and lunch is skipped and dinner rice and dal, on july 24 breakfast is poori..."), you MUST output a separate object in 'bulk_entries' for EVERY single meal/skipped item across each date!
-     b) Date Calculation Precision: Compare relative day words like "yesterday", "today", "tomorrow" strictly against Current Indian Date (${indianDate}). For example, if Current Date is 2026-07-26, "yesterday" MUST resolve to 2026-07-25. "july 24" MUST resolve to 2026-07-24.
-     c) Skipped Meals: If the user says a meal was skipped (e.g. "lunch is skipped"), create a meal entry with category "meal", data { "meal_type": "lunch", "skipped": true, "items": [] }, and include it in 'bulk_entries'.
-   - Execution Format: Set "action": "bulk_insert" and populate 'bulk_entries' with every single parsed item and date.
-   - NEVER drop, skip, or ignore any meal type or date mentioned in the user's message!
-
-9. Ambiguous Logging Verification (CRITICAL Doubt-Buster):
-   - If a message contains data (numbers, metrics, foods, expenses, sleep hours) but DOES NOT use an explicit action or logging verb AND has no units/category context, you MAY ask for confirmation.
-   - However, if the user provides metrics with units (e.g. "8 hours per day", "₹500", "3km", "4h work") or answers a clarification prompt, do NOT ask for confirmation—log it directly!`;
-}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -309,16 +34,16 @@ serve(async (req) => {
     );
 
     const body = await req.json();
+    const { text, userId = 1, draftContext = null, config, history = [], imageUrl } = body;
+
     console.log('[serve] Received request payload:', JSON.stringify({
       text: body.text,
-      userId: body.userId,
-      hasDraftContext: !!body.draftContext,
-      historyLength: body.history?.length || 0,
-      imageUrl: body.imageUrl || 'none',
-      provider: body.config?.provider
+      userId,
+      hasDraftContext: !!draftContext,
+      historyLength: history?.length || 0,
+      imageUrl: imageUrl || 'none',
+      provider: config?.provider
     }));
-
-    const { text, userId = 1, draftContext = null, config, history = [], imageUrl } = body;
 
     if (!text || !text.trim()) {
       return new Response(JSON.stringify({ error: 'Message text is required' }), {
@@ -330,530 +55,34 @@ serve(async (req) => {
     const trimmedText = text.trim();
     const finalImageUrl = imageUrl || draftContext?.imageUrl || null;
 
-    // ── DETERMINISTIC CONFIRMATION STATE MACHINE ──
+    // ── STEP 1: DETERMINISTIC CONFIRMATION STATE MACHINE ──
     if (draftContext) {
-      // 0. Generic Multi-Turn Slot Filling Intercept
-      let isSlotFill = false;
-      let slotFillPayload: any = null;
-
-      try {
-        const slotFillPrompt = `You are a conversation state assistant for Buddy AI.
-The user was previously asked a clarification or follow-up question: "${draftContext.clarification_prompt || 'Can you provide details?'}"
-Pending Draft Context: ${JSON.stringify(draftContext)}
-Current Calendar Date (IST): ${getIndianDateStr()}
-
-User replied: "${trimmedText}"
-
-Determine if the user's reply is answering the question, providing missing details (e.g. number of hours, amount, meal items, project/work details, exercise mins, multi-day span, or log confirmation), or instructing to log the data for ANY category.
-
-Return ONLY a JSON object:
-{
-  "is_slot_fill": boolean,
-  "action": "insert" | "bulk_insert" | "update" | "delete" | "cancel" | null,
-  "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other" | null,
-  "data": object | null,
-  "entry_time": ISO 8601 string or null,
-  "event_date": "YYYY-MM-DD" or null,
-  "bulk_entries": [
-    {
-      "category": "meal" | "mood" | "exercise" | "sleep" | "expense" | "work" | "other",
-      "entry_time": ISO 8601 string,
-      "data": object,
-      "raw_text": string
-    }
-  ] | null,
-  "acknowledgment": "A warm, articulate, supportive 1-2 sentence companion reply. Confirm what was logged AND include a personalized encouraging comment or wish. Speak like a caring close friend." | null
-}
-If is_slot_fill is true, merge the new information from user's reply with draftContext. If the user specifies a multi-day span (e.g. "for past 3 days", "every day"), populate bulk_entries with separate items for each day. Otherwise set is_slot_fill to false.`;
-
-        const slotResText = await callLLM(config, slotFillPrompt, trimmedText);
-        let cleanedSlotRes = slotResText.trim();
-        const slotJsonMatch = cleanedSlotRes.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (slotJsonMatch) cleanedSlotRes = slotJsonMatch[1].trim();
-        const jsonMatchObj = cleanedSlotRes.match(/\{[\s\S]*?\}/);
-        if (jsonMatchObj) cleanedSlotRes = jsonMatchObj[0];
-
-        const slotParsed = JSON.parse(cleanedSlotRes);
-        if (slotParsed && slotParsed.is_slot_fill) {
-          isSlotFill = true;
-          slotFillPayload = slotParsed;
-          console.log('[serve] State Machine: Generic Slot-Filling detected!', JSON.stringify(slotFillPayload));
-        }
-      } catch (err) {
-        console.warn('[serve] Slot-filling evaluation failed:', err);
+      const smResult = await handleStateMachine(
+        draftContext,
+        trimmedText,
+        userId,
+        supabaseClient,
+        config,
+        corsHeaders,
+        callLLM
+      );
+      if (smResult.handled && smResult.response) {
+        return smResult.response;
       }
-
-      if (isSlotFill && slotFillPayload) {
-        const action = slotFillPayload.action || draftContext.action || 'insert';
-        if (action === 'bulk_insert' && slotFillPayload.bulk_entries && slotFillPayload.bulk_entries.length > 0) {
-          const insertRows = [];
-          for (const entry of slotFillPayload.bulk_entries) {
-            const raw = entry.raw_text || `${entry.category} entry`;
-            const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-            const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-            const emb = await getEmbedding(embedPayload);
-
-            insertRows.push({
-              user_id: userId,
-              raw_text: raw,
-              category: entry.category || draftContext.category || 'other',
-              entry_time: entry.entry_time || new Date().toISOString(),
-              data: entry.data || {},
-              embedding: emb || undefined,
-              tags: rowTags,
-              event_date: entry.event_date || slotFillPayload.event_date || null
-            });
-          }
-
-          const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
-          if (error) throw new Error(error.message);
-
-          return new Response(JSON.stringify({
-            entry: inserted[0],
-            acknowledgment: slotFillPayload.acknowledgment || `Successfully logged ${inserted.length} entries!`,
-            needs_clarification: false,
-            draftContext: null,
-          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        } else {
-          const category = slotFillPayload.category || draftContext.category || 'other';
-          const dataPayload = slotFillPayload.data || draftContext.data || {};
-          const rawText = trimmedText || draftContext.raw_text || `${category} log`;
-          const rowTags = (rawText.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-          const embedPayload = `${category}: ${rawText} - Data: ${JSON.stringify(dataPayload)}`;
-          const emb = await getEmbedding(embedPayload);
-
-          const insertPayload: any = {
-            user_id: userId,
-            raw_text: rawText,
-            category,
-            entry_time: slotFillPayload.entry_time || draftContext.entry_time || new Date().toISOString(),
-            data: dataPayload,
-            tags: rowTags,
-            event_date: slotFillPayload.event_date || draftContext.event_date || null
-          };
-          if (emb) insertPayload.embedding = emb;
-
-          const { data: inserted, error } = await supabaseClient.from('entries').insert([insertPayload]).select();
-          if (error) throw new Error(error.message);
-
-          return new Response(JSON.stringify({
-            entry: inserted[0],
-            acknowledgment: slotFillPayload.acknowledgment || `Successfully logged your ${category} entry!`,
-            needs_clarification: false,
-            draftContext: null,
-          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-      }
-
-      let isConfirm = false;
-      let isAccumulate = false;
-      let isCancel = false;
-      let isKeepBoth = false;
-      let isNewCommand = false;
-
-      try {
-        const confirmPrompt = `You are a conversation state assistant.
-The user was asked a confirmation question: "${draftContext.clarification_prompt || 'Are you sure?'}"
-The user replied: "${trimmedText}"
-
-Classify the user's reply into one of the following categories:
-- 'accumulate': The user wants to accumulate, add to total, sum up, or combine values (e.g., "accumulate", "add to total", "sum them", "combine", "yes accumulate", "total").
-- 'confirm': The user is agreeing, confirming, saying yes, or instructing to overwrite/update/replace (e.g., "yes", "overwrite", "do it", "replace", "yeah", "confirm").
-- 'keep_both': The user wants to keep both entries as separate logs (e.g., "keep both", "separate", "add both", "keep separate").
-- 'cancel': The user is denying, cancelling, or saying no (e.g., "no", "cancel", "dont", "skip").
-- 'new_command': The user is typing a completely new topic.
-
-Return ONLY one of these strings: 'accumulate', 'confirm', 'keep_both', 'cancel', or 'new_command'.`;
-
-        const decisionText = await callLLM(config, confirmPrompt, trimmedText);
-        const decision = decisionText.trim().toLowerCase();
-        console.log('[serve] State Machine LLM Decision:', decision);
-
-        if (decision.includes('accumulate')) isAccumulate = true;
-        else if (decision.includes('confirm')) isConfirm = true;
-        else if (decision.includes('keep_both')) isKeepBoth = true;
-        else if (decision.includes('cancel')) isCancel = true;
-        else if (decision.includes('new_command')) isNewCommand = true;
-      } catch (err) {
-        console.error('[serve] LLM confirmation classification failed, falling back to static keywords:', err);
-        const lowerConfirm = trimmedText.toLowerCase();
-        isAccumulate = ['accumulate', 'add to total', 'sum', 'combine', 'total'].some(k => lowerConfirm.includes(k));
-        isConfirm = ['yes', 'yeah', 'yep', 'y', 'sure', 'confirm', 'do it', 'overwrite', 'update', 'delete', 'yes please', 'do that', 'ok', 'okay'].includes(lowerConfirm);
-        isCancel = ['no', 'cancel', 'dont', 'don\'t', 'stop', 'nay', 'n', 'no thanks', 'reject', 'leave', 'skip'].some(k => lowerConfirm.includes(k));
-        isKeepBoth = ['keep both', 'add both', 'add anyway', 'keep', 'insert anyway', 'separate'].includes(lowerConfirm);
-      }
-
-      if (isAccumulate || isConfirm || isCancel || isKeepBoth) {
-        console.log(`[serve] State Machine Triggered. User reply: "${trimmedText}". isAccumulate: ${isAccumulate}, isConfirm: ${isConfirm}, isCancel: ${isCancel}, isKeepBoth: ${isKeepBoth}`);
-
-        // 1. Deletion Confirmation
-        if (draftContext.delete_entry_ids && draftContext.delete_entry_ids.length > 0) {
-          if (isConfirm) {
-            const validIds = draftContext.delete_entry_ids.filter((id: string) => uuidRegex.test(id));
-            if (validIds.length > 0) {
-              console.log('[serve] State Machine: Deleting entries:', validIds);
-              const { error } = await supabaseClient
-                .from('entries')
-                .delete()
-                .in('id', validIds);
-
-              if (error) {
-                console.error('[serve] State Machine Deletion Error:', error.message);
-                throw new Error(error.message);
-              }
-              return new Response(JSON.stringify({
-                entry: null,
-                acknowledgment: 'Successfully deleted the specified log entries.',
-                needs_clarification: false,
-                draftContext: null,
-              }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-            }
-          } else {
-            return new Response(JSON.stringify({
-              entry: null,
-              acknowledgment: 'Deletion cancelled.',
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          }
-        }
-
-        // 2. Conflict / Overwrite / Accumulate Confirmation
-        if (draftContext.update_entry_id) {
-          const remainingBulkEntries = draftContext.bulk_entries && draftContext.bulk_entries.length > 1
-            ? draftContext.bulk_entries.filter((e: any) => !(e.category === draftContext.category && (e.data?.meal_type === draftContext.data?.meal_type || e.category !== 'meal')))
-            : [];
-
-          if (isAccumulate && draftContext.accumulated_data) {
-            console.log('[serve] State Machine: Accumulating entry ID:', draftContext.update_entry_id);
-            const embedText = `${draftContext.category}: ${draftContext.accumulated_text || draftContext.raw_text} - Data: ${JSON.stringify(draftContext.accumulated_data)}`;
-            const embedding = await getEmbedding(embedText);
-
-            const updatePayload: any = {
-              user_id: userId,
-              raw_text: draftContext.accumulated_text || draftContext.raw_text,
-              category: draftContext.category,
-              data: draftContext.accumulated_data,
-              tags: draftContext.tags || [],
-              event_date: draftContext.event_date || null
-            };
-            if (embedding) updatePayload.embedding = embedding;
-
-            const { data: updated, error } = await supabaseClient
-              .from('entries')
-              .update(updatePayload)
-              .eq('id', draftContext.update_entry_id)
-              .select();
-
-            if (error) throw new Error(error.message);
-
-            return new Response(JSON.stringify({
-              entry: updated[0],
-              acknowledgment: `Successfully accumulated ${draftContext.category} log into daily total! 📊`,
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          } else if (isConfirm) {
-            console.log('[serve] State Machine: Overwriting entry ID:', draftContext.update_entry_id);
-            const embedText = `${draftContext.category}: ${draftContext.raw_text} - Data: ${JSON.stringify(draftContext.data || {})}`;
-            const embedding = await getEmbedding(embedText);
-
-            const updatePayload: any = {
-              user_id: userId,
-              raw_text: draftContext.raw_text,
-              category: draftContext.category,
-              entry_time: draftContext.entry_time || new Date().toISOString(),
-              data: draftContext.data || {},
-              tags: draftContext.tags || [],
-              event_date: draftContext.event_date || null
-            };
-            if (embedding) updatePayload.embedding = embedding;
-
-            const { data: updated, error } = await supabaseClient
-              .from('entries')
-              .update(updatePayload)
-              .eq('id', draftContext.update_entry_id)
-              .select();
-
-            if (error) throw new Error(error.message);
-
-            // Insert remaining non-conflicting bulk entries
-            if (remainingBulkEntries.length > 0) {
-              const insertRows = [];
-              for (const entry of remainingBulkEntries) {
-                const raw = entry.raw_text || `${entry.category} entry`;
-                const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-                const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-                const emb = await getEmbedding(embedPayload);
-
-                insertRows.push({
-                  user_id: userId,
-                  raw_text: raw,
-                  category: entry.category || 'other',
-                  entry_time: entry.entry_time || new Date().toISOString(),
-                  data: entry.data || {},
-                  embedding: emb || undefined,
-                  tags: rowTags,
-                  event_date: entry.event_date || null
-                });
-              }
-              await supabaseClient.from('entries').insert(insertRows);
-            }
-
-            return new Response(JSON.stringify({
-              entry: updated[0],
-              acknowledgment: remainingBulkEntries.length > 0
-                ? `Updated ${draftContext.category} and logged ${remainingBulkEntries.length} remaining items!`
-                : 'Successfully updated your existing entry.',
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-          } else if (isKeepBoth) {
-            console.log('[serve] State Machine: Keeping both. Inserting new logs.');
-            const entriesToInsert = draftContext.bulk_entries && draftContext.bulk_entries.length > 0
-              ? draftContext.bulk_entries
-              : [{ raw_text: draftContext.raw_text, category: draftContext.category, data: draftContext.data || {}, tags: draftContext.tags || [], event_date: draftContext.event_date || null }];
-
-            const insertRows = [];
-            for (const entry of entriesToInsert) {
-              const raw = entry.raw_text || `${entry.category} entry`;
-              const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-              const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-              const emb = await getEmbedding(embedPayload);
-
-              insertRows.push({
-                user_id: userId,
-                raw_text: raw,
-                category: entry.category || 'other',
-                entry_time: entry.entry_time || new Date().toISOString(),
-                data: entry.data || {},
-                embedding: emb || undefined,
-                tags: rowTags,
-                event_date: entry.event_date || null
-              });
-            }
-
-            const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
-            if (error) throw new Error(error.message);
-
-            return new Response(JSON.stringify({
-              entry: inserted[0],
-              acknowledgment: `Added ${inserted.length} entries.`,
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-
-          } else {
-            // User cancelled/skipped the conflicting entry - log the remaining items!
-            if (remainingBulkEntries.length > 0) {
-              console.log(`[serve] State Machine: User skipped ${draftContext.category}. Logging remaining ${remainingBulkEntries.length} items...`);
-              const insertRows = [];
-              for (const entry of remainingBulkEntries) {
-                const raw = entry.raw_text || `${entry.category} entry`;
-                const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-                const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-                const emb = await getEmbedding(embedPayload);
-
-                insertRows.push({
-                  user_id: userId,
-                  raw_text: raw,
-                  category: entry.category || 'other',
-                  entry_time: entry.entry_time || new Date().toISOString(),
-                  data: entry.data || {},
-                  embedding: emb || undefined,
-                  tags: rowTags,
-                  event_date: entry.event_date || null
-                });
-              }
-
-              const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
-              if (error) throw new Error(error.message);
-
-              const itemsSummary = remainingBulkEntries.map((e: any) => e.raw_text).join(', ');
-              return new Response(JSON.stringify({
-                entry: inserted[0],
-                acknowledgment: `Skipped ${draftContext.category} update. Successfully logged remaining item(s): "${itemsSummary}"! 🎬`,
-                needs_clarification: false,
-                draftContext: null,
-              }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-            }
-
-            return new Response(JSON.stringify({
-              entry: null,
-              acknowledgment: 'Cancelled.',
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          }
-        }
-
-        // 3. Bulk Ingestion Confirmation
-        if (draftContext.action === 'bulk_insert' && draftContext.bulk_entries && draftContext.bulk_entries.length > 0) {
-          if (isConfirm) {
-            console.log(`[serve] State Machine: Bulk inserting ${draftContext.bulk_entries.length} entries...`);
-            const insertRows = [];
-            const entriesToProcess = draftContext.bulk_entries.slice(0, 40);
-
-            for (const entry of entriesToProcess) {
-              const raw = entry.raw_text || `${entry.category} entry`;
-              const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-              const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-              const embedding = await getEmbedding(embedPayload);
-
-              insertRows.push({
-                user_id: userId,
-                raw_text: raw,
-                category: entry.category || 'other',
-                entry_time: entry.entry_time || new Date().toISOString(),
-                data: entry.data || {},
-                embedding: embedding || undefined,
-                tags: rowTags
-              });
-            }
-
-            const { data: inserted, error } = await supabaseClient
-              .from('entries')
-              .insert(insertRows)
-              .select();
-
-            if (error) {
-              console.error('[serve] State Machine Bulk Insert Error:', error.message);
-              throw new Error(error.message);
-            }
-
-            return new Response(JSON.stringify({
-              entry: inserted[0],
-              acknowledgment: `Successfully imported ${inserted.length} log entries from your file!`,
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          } else {
-            return new Response(JSON.stringify({
-              entry: null,
-              acknowledgment: 'Document import cancelled.',
-              needs_clarification: false,
-              draftContext: null,
-            }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          }
-        }
-      }
-
-      console.log('[serve] State Machine ignored. User typed a new logging/query instruction.');
     }
 
-    // 1. Intent Detection (LOG vs. QUERY vs. CHAT)
-    let intent = 'LOG';
+    // ── STEP 2: FAST INTENT ROUTER ──
+    const route = classifyIntent(trimmedText, !!finalImageUrl, !!draftContext);
+    let intent = route.intent;
 
-    if (finalImageUrl) {
-      intent = 'LOG';
-    } else {
-      const lowerText = trimmedText.toLowerCase();
-      const forceLogKeywords = ['log this message', 'log this', 'remember this', 'remember to', 'save this', 'remind me to', 'note down', 'note this', 'log it', 'remember it'];
-      const isExplicitLogPrefix = lowerText.startsWith('log ') || lowerText.startsWith('log for ') || lowerText.startsWith('log note:') || lowerText.startsWith('log meal:') || lowerText.startsWith('log sleep:') || lowerText.startsWith('log expense:');
-      const hasForceLogKeyword = forceLogKeywords.some(kw => lowerText.includes(kw)) || isExplicitLogPrefix;
-
-      if (hasForceLogKeyword) {
-        intent = 'LOG';
-      } else {
-        const questionPrefixes = [
-          'can i', 'can we', 'may i', 'should i', 'could i', 'is it', 'do i', 'does ', 'what if',
-          'how can', 'why ', 'shall i', 'am i', 'are we', 'would it', 'can u', 'can you', 'is there', 'are there',
-          'question'
-        ];
-        const isQuestionPhrase = questionPrefixes.some(qp => lowerText.startsWith(qp) || lowerText.includes(` ${qp}`)) || lowerText.endsWith('?');
-
-        const queryKeywords = [
-          'today logs', 'today\'s logs', 'todays logs', 'show logs', 'my logs', 'recent logs', 'all logs', 'get logs', 'view logs', 'log history',
-          'show', 'display', 'list', 'what', 'how', 'when', 'where', 'did i', 'have i', 'history', 'summary', 'report', 'tell me',
-          'what did i', 'show me', 'list my', 'get my', 'view my', 'check my', 'find my', 'any logs', 'my entries'
-        ];
-        const isQueryPhrase = (isQuestionPhrase || queryKeywords.some(kw => lowerText.includes(kw))) && !isExplicitLogPrefix;
-        const isSingleWordCategory = ['sleep', 'expense', 'expenses', 'meals', 'meal', 'mood', 'exercise', 'exercises', 'history', 'logs'].includes(lowerText);
-        const onlyHashtagsRegex = /^#[a-zA-Z0-9\-_]+(\s+#[a-zA-Z0-9\-_]+)*$/;
-
-        if (isQueryPhrase || isSingleWordCategory || onlyHashtagsRegex.test(trimmedText)) {
-          intent = 'QUERY';
-        } else {
-          try {
-            const classifierPrompt = `You are an intent classifier for a personal AI companion.
-Analyze the user's message: "${trimmedText}"
-${history && history.length > 0 ? `\nRecent conversation history:\n${history.slice(-4).map((h: any) => `${h.role}: "${h.content}"`).join('\n')}\n` : ''}
-${draftContext ? `Pending Clarification Question: "${draftContext.clarification_prompt}"\n` : ''}
-
-Classify into ONE of 3 categories:
-- 'QUERY': User is asking to view, list, check, search, summarize, or ask questions about existing stored logs, history, or pantry (e.g. "today logs", "show logs", "what did I eat", "how much spent").
-- 'LOG': User is instructing to record, log, save, or add structured data/metrics/activities, or replying to a pending log prompt (e.g. "log for last 3 days", "ate oats", "spent 200", "slept 7 hours", "log I am frustrated", "worked 4h").
-- 'CHAT': Greetings, casual remarks, conversational chitchat, or direct answers to Buddy's previous non-log questions (e.g. "hi", "bad", "fine", "will meet afternoon", "asking you", "thanks", "ok").
-
-Reply with strictly ONE word: 'LOG', 'QUERY', or 'CHAT'.`;
-            const check = await callLLM(config, classifierPrompt, trimmedText);
-            const res = check.toUpperCase().trim();
-            if (res.includes('QUERY')) {
-              intent = 'QUERY';
-            } else if (res.includes('CHAT')) {
-              intent = 'CHAT';
-            } else {
-              intent = 'LOG';
-            }
-          } catch (_) {
-            intent = 'CHAT';
-          }
-        }
-      }
+    if (!intent) {
+      intent = await fallbackLLMClassifyIntent(config, trimmedText, history, draftContext, callLLM);
     }
     console.log(`[serve] Resolved intent: ${intent}`);
 
-    const timezone = 'Asia/Kolkata';
-
-    // ── CASE C: CHAT (CONVERSATIONAL FRIEND AI & AUTO MOOD LOGGING) ──
+    // ── STEP 3A: CHAT INTENT (CONVERSATIONAL FRIEND & AUTO MOOD LOG) ──
     if (intent === 'CHAT') {
-      const lowerChat = trimmedText.toLowerCase();
-      const isConversationalPleasantry = /^(good|nice|cool|great)\s+(buddy|job|night|morning|afternoon|evening|work|one|thanks|thank you|bro|man)/i.test(lowerChat) ||
-        /(sounds|looks|all|that's|is)\s+good/i.test(lowerChat) ||
-        /^(good|nice|cool|awesome|great|ok|okay|thanks)$/i.test(lowerChat);
-
-      const strongMoodKeywords = ['sad', 'frustrated', 'depressed', 'anxious', 'stressed', 'tired', 'exhausted', 'horrible', 'feeling down'];
-      const explicitMoodPhrase = /(feeling|feel|i am|i'm|my mood)\s+(good|great|happy|excited|awesome|bad|sad|tired|anxious|stressed)/i.test(lowerChat);
-      const hasStrongMoodWord = strongMoodKeywords.some(m => new RegExp(`\\b${m}\\b`, 'i').test(lowerChat));
-
-      const expressMood = !isConversationalPleasantry && (explicitMoodPhrase || hasStrongMoodWord);
-
-      if (expressMood) {
-        const moodKeywords = ['bad', 'sad', 'frustrated', 'depressed', 'anxious', 'stressed', 'tired', 'exhausted', 'horrible', 'feeling down', 'great', 'happy', 'excited', 'awesome', 'good'];
-        const matchedMood = moodKeywords.find(m => new RegExp(`\\b${m}\\b`, 'i').test(lowerChat)) || 'neutral';
-        console.log(`[serve] CHAT intent detected explicit mood expression: "${matchedMood}". Auto-logging mood...`);
-
-        const moodEmbed = `mood: feeling ${matchedMood} ("${trimmedText}") - Data: ${JSON.stringify({ mood: matchedMood })}`;
-        const embedding = await getEmbedding(moodEmbed);
-
-        await supabaseClient.from('entries').insert([{
-          user_id: userId,
-          raw_text: trimmedText,
-          category: 'mood',
-          entry_time: new Date().toISOString(),
-          data: { mood: matchedMood, intensity: ['bad', 'frustrated', 'sad', 'depressed', 'horrible'].includes(matchedMood) ? 8 : 7 },
-          tags: [],
-          embedding: embedding || undefined
-        }]);
-      }
-
-      const chatPrompt = `You are Buddy, the user's friendly personal AI companion.
-User Name: Sudhakar (call him Buddy or Boss).
-Timezone: Asia/Kolkata (Indian Standard Time - IST).
-Current Indian Date: ${getIndianDateStr()}
-Tone: Clean, warm, empathetic, supportive, and natural. Speak like a real human friend.
-Emoji & Greeting Rule (STRICT): NEVER attach any emojis to the word Buddy or greetings (e.g. NEVER write '🤙 Buddy', 'Hey Buddy 🤙', 'Buddy 🫂'). Do NOT use tacky or unnecessary emojis. Keep responses clean, natural, and friendly.
-Context: You are having a casual conversation with Sudhakar.
-Respond to his message in 1-2 friendly, conversational sentences. Do NOT ask robotic confirmation prompts like "Did you want me to log this?".`;
-
-      let chatUserMsg = '';
-      if (history && history.length > 0) {
-        chatUserMsg += `CONVERSATION HISTORY:\n` + history.slice(-6).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
-      }
-      chatUserMsg += `USER MESSAGE: "${trimmedText}"`;
-
-      const chatReply = await callLLM(config, chatPrompt, chatUserMsg);
+      const chatReply = await synthesizeChatReply(config, trimmedText, history, userId, supabaseClient);
       return new Response(JSON.stringify({
         entry: null,
         acknowledgment: chatReply,
@@ -862,466 +91,14 @@ Respond to his message in 1-2 friendly, conversational sentences. Do NOT ask rob
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // ── CASE A: QUERY (GENERAL ASSISTANT & RAG SEARCH) ──
+    // ── STEP 3B: QUERY INTENT (PARALLEL RAG & TWO-STAGE RE-RANKING) ──
     if (intent === 'QUERY') {
-      const currentDateOnly = getIndianDateStr();
-      const todayFullStr = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+      const effectiveQuery = await rewriteFollowUp(config, trimmedText, history, callLLM);
+      const retrieved = await retrieveContext(effectiveQuery, route, userId, supabaseClient);
+      const rerankLimit = route.isQuantitative ? 30 : 10;
+      const rerankedLogs = rerankLogs(effectiveQuery, retrieved.candidates, rerankLimit);
+      const answer = await synthesizeQueryAnswer(config, effectiveQuery, rerankedLogs, retrieved, history);
 
-      // ── CONVERSATIONAL QUERY CONTEXT REWRITER (Abstract Coreference Resolver) ──
-      let effectiveQuery = trimmedText;
-      if (history && history.length > 0) {
-        try {
-          const contextualizerPrompt = `You are a conversational query context resolver.
-Given the recent conversation history and the user's latest message, rephrase the latest message into a standalone, self-contained search query.
-
-Rules:
-1. If the user's latest message is a follow-up query, layout request, date filter, or refinement, resolve implicit topics and categories from the conversation history so that the rephrased query is 100% self-contained.
-2. If the latest message is already self-contained, return it unchanged.
-3. Do NOT answer the question. Return ONLY the single rephrased query text string without quotes or explanations.`;
-
-          const contextHistoryText = history.slice(-6).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n');
-          const reworded = await callLLM(config, contextualizerPrompt, `CONVERSATION HISTORY:\n${contextHistoryText}\n\nLATEST USER MESSAGE: "${trimmedText}"`);
-          if (reworded && reworded.trim()) {
-            effectiveQuery = reworded.trim().replace(/^["']|["']$/g, '');
-            console.log(`[serve] Conversational Coreference Resolved: "${trimmedText}" ➔ "${effectiveQuery}"`);
-          }
-        } catch (err) {
-          console.warn('[serve] Contextual query rewriter failed, falling back to raw query:', err);
-        }
-      }
-
-      // Check if it is a quantitative query requiring database-side math aggregation
-      let aggregateStatsContext = '';
-      const isQuantitativeQuery = /(how\s+(many|much)|total|average|avg|sum\s+of|frequency\s+of|how\s+often)/i.test(effectiveQuery);
-
-      if (isQuantitativeQuery) {
-        console.log('[serve] Quantitative query detected. Running DB aggregate classifier...');
-        try {
-          const parserPrompt = `You are a query parsing assistant. Analyze this user query: "${effectiveQuery}"
-Current Time/Calendar Reference: ${todayFullStr}
-
-Extract the quantitative database query parameters as a JSON object:
-{
-  "category": "meal" | "sleep" | "expense" | "mood" | "exercise" | "work" | "other",
-  "op": "count" | "sum" | "avg",
-  "field": string | null,       -- name of JSON key in data object to calculate math on (e.g. 'amount' for expense, 'hours' for sleep, 'calories' for nutrition calories, or null for simple counts)
-  "filter_key": string | null,  -- JSON key inside data object to filter by (e.g., 'meal_type' for meals, 'subcategory' for expenses, 'activity' for exercises, 'skipped' for skipped meals)
-  "filter_val": string | null,  -- value of that JSON key (e.g., 'breakfast' for meal_type, 'food' for subcategory, 'running' for activity, 'true' or 'false' for skipped)
-  "days": number                -- number of days to look back (default to 30 if timeframe is unclear, 365 for past year, 7 for past week, 1 for yesterday/today, etc.)
-}
-
-Return ONLY this JSON object. Do not include markdown code block formatting or explanations.`;
-
-          const parseRes = await callLLM(config, parserPrompt, effectiveQuery);
-          let cleanedParse = parseRes.trim();
-          const jsonMatch = cleanedParse.match(/\{[\s\S]*?\}/);
-          if (jsonMatch) cleanedParse = jsonMatch[0];
-
-          const parsedParams = JSON.parse(cleanedParse);
-          console.log('[serve] Parsed Quantitative Params:', JSON.stringify(parsedParams));
-
-          if (parsedParams.category && parsedParams.op) {
-            const { data: statsVal, error: statsErr } = await supabaseClient.rpc('get_aggregate_stats', {
-              p_user_id: userId,
-              p_category: parsedParams.category,
-              p_op: parsedParams.op,
-              p_field: parsedParams.field || null,
-              p_filter_key: parsedParams.filter_key || null,
-              p_filter_val: parsedParams.filter_val !== null ? String(parsedParams.filter_val) : null,
-              p_days: parsedParams.days || 30
-            });
-
-            if (statsErr) {
-              console.error('[serve] get_aggregate_stats RPC error:', statsErr.message);
-            } else {
-              console.log('[serve] get_aggregate_stats RPC returned:', statsVal);
-              const opName = parsedParams.op === 'sum' ? 'Total sum' : (parsedParams.op === 'avg' ? 'Average' : 'Total count');
-              const fieldLabel = parsedParams.field ? ` of ${parsedParams.field}` : '';
-              const filterLabel = parsedParams.filter_key ? ` (filtered by ${parsedParams.filter_key} = ${parsedParams.filter_val})` : '';
-
-              aggregateStatsContext = `AGGREGATE DATABASE CALCULATIONS SUMMARY:
-- Metric: ${opName}${fieldLabel}${filterLabel} over the past ${parsedParams.days} days
-- Computed Metric Value: ${statsVal}
-- Instruction: Use this metric value as primary quantitative guidance, but always verify and cross-reference with any matching individual log entries in the history context below.`;
-              console.log('[serve] Aggregate stats injected successfully:', statsVal);
-            }
-          }
-        } catch (err) {
-          console.error('[serve] Failed to parse/execute quantitative query:', err);
-        }
-      }
-
-      let historyContext = '';
-      const queryVector = await getEmbedding(effectiveQuery);
-      const hashtags = (effectiveQuery.match(/#([a-zA-Z0-9\-_]+)/g) || []).map(tag => tag.substring(1).toLowerCase());
-
-      // Multi-Category Targeted Router Classifier
-      let targetCategories: string[] = ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
-      const lowerQuery = effectiveQuery.toLowerCase();
-      const isGeneralQuery = ['log', 'logs', 'history', 'everything', 'all', 'summary', 'summarize', 'report', 'show all', 'list all'].some(kw => lowerQuery.includes(kw));
-
-      if (isGeneralQuery) {
-        console.log('[serve] General query keyword matched. Bypassing router.');
-      } else {
-        try {
-          const classifierPrompt = `Identify which log categories are relevant to the user query: "${effectiveQuery}".
-Available categories: 'meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'.
-Return ONLY a JSON array of strings containing the relevant categories, e.g. ["meal"] or ["meal", "sleep"].
-If the query is a general lookup, planning, or is not category-specific, return all categories: ["meal", "sleep", "expense", "mood", "exercise", "work", "other"].`;
-          const res = await callLLM(config, classifierPrompt, effectiveQuery);
-          let cleaned = res.trim();
-          const jsonMatch = cleaned.match(/\[[\s\S]*?\]/);
-          if (jsonMatch) cleaned = jsonMatch[0];
-          const parsedCats = JSON.parse(cleaned);
-          if (Array.isArray(parsedCats) && parsedCats.length > 0) {
-            targetCategories = parsedCats;
-          }
-        } catch (err) {
-          console.error('[serve] Targeted category classification failed:', err);
-        }
-      }
-      console.log('[serve] Targeted Categories:', JSON.stringify(targetCategories));
-
-      let semanticMatches: any[] = [];
-      if (queryVector) {
-        const rpcParams: any = {
-          query_text: effectiveQuery,
-          query_embedding: queryVector,
-          match_threshold: 0.10,
-          match_count: 20,
-          filter_categories: targetCategories
-        };
-        if (hashtags.length > 0) {
-          rpcParams.filter_tags = hashtags;
-        }
-
-        const { data: matches, error: rpcErr } = await supabaseClient.rpc('hybrid_match_entries', rpcParams);
-        if (rpcErr) {
-          console.error('[serve] hybrid_match_entries RPC returned error:', rpcErr.message);
-          const { data: fallbackMatches } = await supabaseClient.rpc('match_entries', rpcParams);
-          if (fallbackMatches) semanticMatches = fallbackMatches;
-        } else if (matches) {
-          semanticMatches = matches;
-        }
-      }
-
-      // Full-Text Search (FTS) Keyword Retrieval (Hybrid Search Layer)
-      let ftsMatches: any[] = [];
-      try {
-        const cleanedQueryWords = effectiveQuery.replace(/[^\w\s]/gi, ' ').trim().split(/\s+/).filter(w => w.length >= 3 && !['how', 'many', 'much', 'times', 'have', 'past', 'days', 'show', 'tell', 'list', 'what', 'when', 'where', 'with', 'from', 'this', 'that', 'were', 'check'].includes(w.toLowerCase()));
-        if (cleanedQueryWords.length > 0) {
-          const tsQueryStr = cleanedQueryWords.join(' | ');
-          console.log('[serve] Executing FTS hybrid keyword retrieval for:', tsQueryStr);
-          const { data: ftsData, error: ftsErr } = await supabaseClient
-            .from('entries')
-            .select('id, entry_time, category, raw_text, data, tags, event_date')
-            .eq('user_id', userId)
-            .textSearch('fts', tsQueryStr, { config: 'english' })
-            .order('entry_time', { ascending: false })
-            .limit(30);
-
-          if (ftsErr) {
-            console.error('[serve] FTS query error:', ftsErr.message);
-          } else if (ftsData) {
-            ftsMatches = ftsData;
-            console.log(`[serve] FTS hybrid retrieval returned ${ftsMatches.length} matches`);
-          }
-        }
-      } catch (ftsErr: any) {
-        console.error('[serve] FTS hybrid search exception:', ftsErr.message);
-      }
-
-      // Load recent logs to ensure today's logs and general timeline are always present
-      let recentLogs: any[] = [];
-      let queryBuilder = supabaseClient
-        .from('entries')
-        .select('id, entry_time, category, raw_text, data, tags, event_date')
-        .eq('user_id', userId);
-
-      if (!isGeneralQuery && targetCategories.length > 0) {
-        queryBuilder = queryBuilder.in('category', targetCategories);
-      }
-
-      if (hashtags.length > 0) {
-        queryBuilder = queryBuilder.contains('tags', hashtags);
-      }
-
-      const { data: recentData, error: recentErr } = await queryBuilder
-        .order('entry_time', { ascending: false })
-        .limit(20);
-
-      if (recentErr) {
-        console.error('[serve] Failed to fetch recent fallback logs:', recentErr.message);
-      } else if (recentData) {
-        recentLogs = recentData;
-      }
-
-      // Date formatter variables are declared at the start of Case A QUERY block.
-
-      // Load calendar events scheduled from today onwards
-      let calendarEvents: any[] = [];
-      const { data: calData, error: calErr } = await supabaseClient
-        .from('entries')
-        .select('id, entry_time, category, raw_text, data, tags, event_date')
-        .eq('user_id', userId)
-        .not('event_date', 'is', null)
-        .gte('event_date', currentDateOnly)
-        .order('event_date', { ascending: true })
-        .limit(15);
-
-      if (calErr) {
-        console.error('[serve] Failed to fetch future calendar events:', calErr.message);
-      } else if (calData) {
-        calendarEvents = calData;
-      }
-
-      // Fetch past 30 days of entries to generate Programmatic Daily Metric summaries
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-      let dailyMetricsContext = '';
-      const { data: summaryData } = await supabaseClient
-        .from('entries')
-        .select('entry_time, category, data')
-        .eq('user_id', userId)
-        .gte('entry_time', thirtyDaysAgo.toISOString())
-        .order('entry_time', { ascending: true });
-
-      if (summaryData && summaryData.length > 0) {
-        const dailySummaries: Record<string, { calories: number, sleep_hours: number, expense_inr: number, exercises: string[] }> = {};
-
-        summaryData.forEach((row: any) => {
-          const dateStr = row.entry_time.split('T')[0];
-          if (!dailySummaries[dateStr]) {
-            dailySummaries[dateStr] = { calories: 0, sleep_hours: 0, expense_inr: 0, exercises: [] };
-          }
-          const day = dailySummaries[dateStr];
-
-          if (row.category === 'meal' && row.data) {
-            if (row.data.nutrition?.calories) {
-              day.calories += Number(row.data.nutrition.calories);
-            }
-          }
-          if (row.category === 'sleep' && row.data?.hours) {
-            day.sleep_hours += Number(row.data.hours);
-          }
-          if (row.category === 'expense' && row.data?.amount) {
-            day.expense_inr += Number(row.data.amount);
-          }
-          if (row.category === 'exercise' && row.data?.activity) {
-            day.exercises.push(row.data.activity);
-          }
-        });
-
-        const summaryKeys = Object.keys(dailySummaries).sort().reverse();
-        if (summaryKeys.length > 0) {
-          dailyMetricsContext = `DAILY LOG METRICS SUMMARY (PAST 30 DAYS):\n` +
-            `Date | Calories | Sleep Hours | Expenses (INR) | Exercises\n` +
-            `---|---|---|---|---\n` +
-            summaryKeys.map(k => {
-              const d = dailySummaries[k];
-              return `${k} | ${d.calories || 0} kcal | ${d.sleep_hours || 0} hrs | ₹${d.expense_inr || 0} | ${d.exercises.join(', ') || 'None'}`;
-            }).join('\n');
-        }
-      }
-
-      // Merge and deduplicate by entry ID
-      const mergedMap = new Map<string, any>();
-      semanticMatches.forEach((m) => mergedMap.set(m.id, m));
-      ftsMatches.forEach((f) => mergedMap.set(f.id, f));
-      recentLogs.forEach((r) => mergedMap.set(r.id, r));
-      calendarEvents.forEach((c) => mergedMap.set(c.id, c));
-
-      const mergedEntries = Array.from(mergedMap.values());
-      // Sort chronologically descending
-      mergedEntries.sort((a, b) => new Date(b.entry_time).getTime() - new Date(a.entry_time).getTime());
-
-      if (mergedEntries.length > 0) {
-        historyContext = mergedEntries.map((e: any) => {
-          const entryDateStr = e.entry_time.split('T')[0];
-          const d1 = new Date(currentDateOnly + 'T00:00:00');
-          const d2 = new Date(entryDateStr + 'T00:00:00');
-          const diffTime = d2.getTime() - d1.getTime();
-          const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-
-          let relativeStr = '';
-          if (diffDays === 0) relativeStr = 'today';
-          else if (diffDays === 1) relativeStr = 'tomorrow';
-          else if (diffDays === -1) relativeStr = 'yesterday';
-          else if (diffDays > 1) relativeStr = `${diffDays} days from now`;
-          else if (diffDays < -1) relativeStr = `${Math.abs(diffDays)} days ago`;
-
-          let calendarStr = '';
-          if (e.event_date) {
-            calendarStr = ` [Scheduled Event Date: ${e.event_date}]`;
-          }
-
-          let detailsStr = '';
-          if (e.data) {
-            if (e.category === 'meal') {
-              detailsStr = e.data.skipped
-                ? `Skipped ${e.data.meal_type || 'meal'}`
-                : `${e.data.meal_type || 'Meal'}: ${(Array.isArray(e.data.items) && e.data.items.length > 0 ? e.data.items.join(', ') : e.raw_text)}`;
-            } else if (e.category === 'sleep') {
-              detailsStr = `${e.data.hours || 0} hours sleep`;
-            } else if (e.category === 'expense') {
-              detailsStr = `₹${e.data.amount || 0} for ${e.data.description || e.raw_text}`;
-            } else if (e.category === 'exercise') {
-              detailsStr = `${e.data.activity || 'Exercise'} (${e.data.duration_minutes || 0} mins)`;
-            } else if (e.category === 'work') {
-              detailsStr = `${e.data.description || 'Work'} (${e.data.duration_hours || 'N/A'} hrs)`;
-            } else if (e.category === 'mood') {
-              detailsStr = `Mood: ${e.data.mood || 'Logged Mood'} ("${e.raw_text}")`;
-            } else {
-              detailsStr = (e.raw_text || '').replace(/\*/g, '').trim();
-            }
-          } else {
-            detailsStr = (e.raw_text || '').replace(/\*/g, '').trim();
-          }
-
-          const entryTimeStr = new Date(e.entry_time).toLocaleTimeString('en-US', {
-            timeZone: timezone,
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: true
-          });
-          const entryTime24Str = new Date(e.entry_time).toLocaleTimeString('en-US', {
-            timeZone: timezone,
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false
-          });
-
-          return `-[Time: ${entryTimeStr} / ${entryTime24Str} (24h)] [Date: ${entryDateStr}] (${relativeStr})${calendarStr} [Category: ${e.category}] Text: "${e.raw_text}" | Summary: ${detailsStr}`;
-        }).join('\n');
-      }
-
-      // Conditional Recipes & Pantry loading in general mode
-      const isRecipeOrPantryQuery = /(recipe|pantry|cook|fridge|kitchen|ingredient|stock)/i.test(trimmedText);
-      let conditionalKitchenContext = '';
-
-      if (isRecipeOrPantryQuery) {
-        console.log('[serve] Loading conditional kitchen context in general mode...');
-        const { data: pantryStock } = await supabaseClient
-          .from('pantry')
-          .select('name, quantity, unit, expiry_date')
-          .eq('user_id', userId)
-          .order('expiry_date', { ascending: true });
-
-        const { data: recipes } = await supabaseClient
-          .from('recipes')
-          .select('name, ingredients, instructions')
-          .eq('user_id', userId);
-
-        const pantryStockStr = pantryStock && pantryStock.length > 0
-          ? pantryStock.map((p: any) => `- "${p.name}": ${p.quantity} ${p.unit} (Expires: ${p.expiry_date || 'No Expiry'})`).join('\n')
-          : 'Pantry is empty.';
-
-        const recipesStr = recipes && recipes.length > 0
-          ? recipes.map((r: any) => `- "${r.name}": Requires ${JSON.stringify(r.ingredients)}. Instructions: ${r.instructions || 'None'}`).join('\n')
-          : 'No recipes saved in your cookbook.';
-
-        conditionalKitchenContext = `\n\nCONDITIONAL KITCHEN & COOKBOOK CONTEXT (Only answer using this if user asks about cooking, ingredients, recipes, or pantry):
-CURRENT PANTRY STOCK:
-${pantryStockStr}
-
-SAVED RECIPES:
-${recipesStr}`;
-      }
-
-      const queryPrompt = `You are the user's personal Second Brain knowledge base assistant.
-Answer the user's question based on their logs.
-
-Current Date/Time: ${todayFullStr}
-Current Date: ${currentDateOnly} (Timezone: ${timezone})
-
-${aggregateStatsContext ? `${aggregateStatsContext}\n\n` : ''}${dailyMetricsContext}${conditionalKitchenContext}
-
-Strict Rules for Date-Relative Queries (CRITICAL):
-1. When the user asks about "today", "yesterday", "this week", or "last week", you MUST compare the dates of the entries in the HISTORICAL DIARY LOGS with the Current Date (${currentDateOnly}).
-2. If the user asks about a specific period (like "today", "yesterday", "past 2 days", or "this week") and there are NO logs in the context matching that exact date range, you MUST explicitly state that they have no logs recorded for that period. Do NOT show or fall back to any logs from older dates outside the requested period.
-3. You MUST strictly respect the timeline boundaries of the user's query. If the user asks about "the past 2 days only", "today", or "yesterday", you are forbidden from displaying, referencing, or building tables for any logs older than that period (e.g. if today is 2026-07-14, do not show logs from 2026-07-11 or 2026-07-10). If no data exists for those days, simply state: "You haven't logged any [category/meal] data for today (YYYY-MM-DD) or yesterday (YYYY-MM-DD)."
-4. If a log exists for the requested period (e.g. today) but optional details (like nutrition macros, sleep quality, or specific tags) are not present, do NOT say "You haven't logged any [category] today" in your opening sentence. Instead, state clearly what WAS logged (e.g. "You logged breakfast today: poori") and then list whatever information is available.
-5. If the user asks about skipped meals or events (e.g. "when did I skip lunch?", "show skip lunch data", "skipped meals history"), search the HISTORICAL DIARY LOGS for meal entries where the "skipped" boolean field in data is true. List all such occurrences with their dates and specific meal types in a clear list or table.
-6. When comparing dates or checking if an event is within a certain number of days (e.g. "in the next 10 days"), look at the relative day offset string in parentheses (e.g., "(18 days from now)" or "(3 days ago)") provided next to each entry in the HISTORICAL DIARY LOGS. Do NOT rely on your own date math; trust the relative offset string completely to determine if a log falls inside the requested timeframe.
-7. Expense Subcategory Calculations (CRITICAL):
-   - If the user asks for expense totals of a specific subcategory (e.g., 'outside food', 'eating out', 'bills', 'wifi bills', 'travel/transport') for a timeframe (e.g. this week or this month):
-     - Filter the HISTORICAL DIARY LOGS for 'expense' entries that fit that time range.
-     - Intelligently map their request to the stored subcategory or descriptions (e.g., wifi bill and electricity are 'bills'; lunch starters and restaurants are 'food').
-     - Mathematically sum up their amounts and display the total in INR (e.g., "Total bills this week: ₹1,200 (₹750 wifi + ₹450 electricity)"). Do NOT hallucinate. Show the math step-by-step and list each contributing transaction.
-8. Scheduled / Target Date Rule (CRITICAL):
-   - If an entry has a 'Scheduled Event Date' (event_date) matching the queried date (e.g. today ${currentDateOnly}), you MUST treat and count it as logged for that queried date directly, even if the entry's original entry_time date was in the past (e.g. logged yesterday).
-   - Do NOT tell the user "You haven't logged any breakfast data for today" if a scheduled entry exists for today; report it directly as today's log.
-
-9. Day-over-Day Comparison & Analytics Rule (STRICT):
-   - Whenever the user asks to compare days or requests a comparison (e.g. "compare with yesterday", "compare today and yesterday", "yeah compare", "how does today compare", "compare"):
-     - You MUST NOT write one long continuous paragraph! Divide your response into short, structured paragraphs and bullet points.
-     - You MUST provide side-by-side metric comparisons with EXACT NUMBERS for work, sleep, expenses, meals, and leisure:
-       Example Format:
-       Here is how **Today** compares to **Yesterday**:
-
-       • 💻 **Work**: 4 hours today vs. 6 hours yesterday (-2 hrs)
-       • 😴 **Sleep**: 0 hours today vs. 7 hours yesterday (-7 hrs)
-       • 💳 **Expenses**: ₹200 today vs. ₹0 yesterday (+₹200)
-       • 🎬 **Movies & Leisure**: 2 movies today ("Maa Inti Bangaram", "Lenin") vs. 0 yesterday
-       • 💬 **Mood**: Bad & Frustrated today vs. Good mood yesterday
-
-10. Clean Media & Title Formatting Rule (STRICT):
-    - Strip raw surrounding asterisks (*) from movie titles or raw text descriptions. Display clean titles like "Watched: Maa Inti Bangaram" instead of raw markdown glitch text.
-
-Strict Completeness Rule (CRITICAL):
-- You MUST list and describe EVERY SINGLE LOG entry matching the requested period present in HISTORICAL DIARY LOGS across ALL categories (Meals, Work, Expenses, Mood, Notes, Movies, Sleep, Exercise, and any custom/other entries).
-- NEVER omit or drop Mood, Notes, or Other category entries!
-- If there are multiple entries for the same category, list ALL of them chronologically.
-
-Strict Formatting & Presentation Guidelines (CRITICAL):
-1. Multi-Style Presentation Engine (Respect User's Layout Command):
-   - **Style A: Category Cards (Default / "show as cards")**:
-     Group logs by clean markdown subheadings per category. Example:
-     ### 🍲 Meals
-     - **Breakfast**: 3 poori
-     ### 💻 Work
-     - Software Laptop Work (4 hrs)
-     ### ⏰ Mood
-     - **03:47 AM** • Mood: Frustrated ("I am too frustrated now")
-
-   - **Style B: Chronological Timeline ("show as timeline" / "timeline view")**:
-     If the user asks for timeline view or exact times, list chronologically with time pills:
-     - (03:18 AM) • **Breakfast**: 3 poori
-     - (03:20 AM) • **Work**: Laptop Work (4 hrs)
-     - (03:47 AM) • **Mood**: Frustrated ("I am too frustrated now")
-
-   - **Style C: Summary Table ("show as table" / "table view")**:
-     If the user asks for a table or follow-up table view, render a crisp Markdown table:
-     | Time / Category | Activity | Details |
-     | --- | --- | --- |
-     | 🍲 Breakfast | 3 poori | Eating outside |
-     | 💻 Work | Laptop Work | 4 hrs total |
-     | ⏰ 03:47 AM Mood | Frustrated | "I am too frustrated now" |
-
-2. Timestamp & 24-Hour Time Format Rules (STRICT):
-   - Native 24-Hour Time Mode: Prefer displaying exact minute timestamps in 24-hour format (e.g. 08:48 or 15:47) or 12-hour AM/PM format (e.g. 08:48 AM / 03:47 PM) so entries are effortless to manage and compare.
-   - Mood Timestamp Rule (STRICT): For Mood entries, ALWAYS display the exact minute timestamp (e.g. "08:48 • Mood: Bad" or "15:47 • Mood: Frustrated").
-
-3. Paragraph & Readability Rules (STRICT):
-   - NEVER output a long continuous wall-of-text paragraph. Always break text into short, multi-line paragraphs separated by blank lines.
-   - Use bullet points for comparisons, lists, and multi-metric breakdowns.
-
-4. Persona & Style:
-   - Chat like Buddy: articulate, warm, supportive roommate and friend.
-   - Emoji Rule (STRICT): Do NOT spam or use tacky emojis. Keep layout clean, modern, and easy to read.
-   - Respond 100% in clean, fluent English. Translate raw JSON data into friendly terms.
-
-HISTORICAL DIARY LOGS:
-${historyContext || 'No past logs found.'}`;
-
-      let userMsg = '';
-      if (history && history.length > 0) {
-        userMsg += `CONVERSATION HISTORY:\n` + history.slice(-8).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
-      }
-      userMsg += `USER MESSAGE: "${trimmedText}"`;
-
-      const answer = await callLLM(config, queryPrompt, userMsg);
       return new Response(JSON.stringify({
         entry: null,
         acknowledgment: answer,
@@ -1330,7 +107,7 @@ ${historyContext || 'No past logs found.'}`;
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // ── CASE B: LOGGING / WRITING ACTIONS ──
+    // ── STEP 3C: LOG INTENT (STRUCTURED LOGGING & DUPLICATE CHECKS) ──
     const { data: recentEntries } = await supabaseClient
       .from('entries')
       .select('id, raw_text, category, entry_time, data, tags')
@@ -1338,32 +115,10 @@ ${historyContext || 'No past logs found.'}`;
       .order('entry_time', { ascending: false })
       .limit(15);
 
-    const systemPrompt = buildSystemPrompt(timezone);
-
-    let userMsg = '';
-    if (history && history.length > 0) {
-      userMsg += `CONVERSATION HISTORY:\n` + history.slice(-8).map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: "${h.content}"`).join('\n') + `\n\n`;
-    }
-    userMsg += `USER MESSAGE: "${trimmedText}"`;
-    if (finalImageUrl) {
-      userMsg += `\n[Attached Image Link: ${finalImageUrl}]`;
-    }
-    if (recentEntries && recentEntries.length > 0) {
-      userMsg += `\n\nRECENT LOGS:\n` + recentEntries.map((e: any, i: number) =>
-        `${i + 1}. [${e.category}] Date: ${e.entry_time.split('T')[0]} | LOG_ID: ${e.id} | Raw: ${e.raw_text} | Tags: ${JSON.stringify(e.tags || [])} | Data: ${JSON.stringify(e.data)}`
-      ).join('\n');
-    }
-
-    const responseText = await callLLM(config, systemPrompt, userMsg);
-
-    let jsonStr = responseText.trim();
-    const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (jsonMatch) jsonStr = jsonMatch[1].trim();
-
-    const parsed = JSON.parse(jsonStr);
+    const parsed = await synthesizeLogEntry(config, trimmedText, history, recentEntries || [], finalImageUrl);
     console.log('[serve] Structured LLM Parse:', JSON.stringify(parsed));
 
-    // ── PROGRAMMATIC DOUBT-BUSTER GUARD ──
+    // Programmatic Doubt-Buster Guard
     const explicitLoggingVerbs = [
       'spent', 'paid', 'bought', 'cost', 'costs', 'purchase', 'purchased', 'buy',
       'ate', 'had', 'drank', 'ordered', 'eating', 'drinking',
@@ -1372,11 +127,7 @@ ${historyContext || 'No past logs found.'}`;
       'log', 'save', 'remember', 'note', 'record', 'add', 'create', 'write',
       'work', 'worked'
     ];
-    const hasExplicitVerb = explicitLoggingVerbs.some(verb => {
-      const regex = new RegExp(`\\b${verb}\\b`, 'i');
-      return regex.test(trimmedText);
-    });
-
+    const hasExplicitVerb = explicitLoggingVerbs.some(verb => new RegExp(`\\b${verb}\\b`, 'i').test(trimmedText));
     const hasStructuredMetric = /\d+\s*(h|hr|hrs|hours|min|mins|minutes|km|kg|ml|l|inr|rs|rupees|days|d|%)/i.test(trimmedText);
     const hasValidParsedData = parsed.category && parsed.category !== 'other' && (
       (parsed.category === 'sleep' && Number(parsed.data?.hours) > 0) ||
@@ -1388,7 +139,7 @@ ${historyContext || 'No past logs found.'}`;
     );
 
     if (intent === 'LOG' && !finalImageUrl && !hasExplicitVerb && !hasStructuredMetric && !hasValidParsedData && !parsed.needs_clarification) {
-      console.log(`[serve] Programmatic Doubt-Buster triggered: Ambiguous log message "${trimmedText}".`);
+      console.log(`[serve] Programmatic Doubt-Buster triggered: "${trimmedText}".`);
       parsed.needs_clarification = true;
       parsed.clarification_prompt = `I noticed you mentioned '${trimmedText}'. Did you want me to log this, or is it just a comment?`;
     }
@@ -1401,190 +152,20 @@ ${historyContext || 'No past logs found.'}`;
       parsed.update_entry_id = null;
     }
 
-    // ── DATABASE-LEVEL INTELLECTUAL DUPLICATE VALIDATION ──
+    // Check for Duplicate Conflict
     if ((parsed.action === 'insert' || parsed.action === 'bulk_insert') && !parsed.needs_clarification) {
-      const targetDate = parsed.entry_time ? getIndianDateStr(parsed.entry_time) : getIndianDateStr();
-      let conflictEntryId = null;
-      let conflictDetails = '';
-      let conflictingBulkIndex = -1;
-
-      const itemsToCheck = parsed.action === 'bulk_insert' && parsed.bulk_entries && parsed.bulk_entries.length > 0
-        ? parsed.bulk_entries
-        : [parsed];
-
-      for (let i = 0; i < itemsToCheck.length; i++) {
-        const item = itemsToCheck[i];
-        const itemCategory = item.category;
-        const itemData = item.data || {};
-
-        if (itemCategory === 'sleep') {
-          const { data: conflicts } = await supabaseClient
-            .from('entries')
-            .select('id, data')
-            .eq('user_id', userId)
-            .eq('category', 'sleep')
-            .gte('entry_time', `${targetDate}T00:00:00Z`)
-            .lte('entry_time', `${targetDate}T23:59:59Z`);
-
-          if (conflicts && conflicts.length > 0) {
-            conflictEntryId = conflicts[0].id;
-            conflictDetails = `sleep log (${conflicts[0].data?.hours || 8} hours)`;
-            conflictingBulkIndex = i;
-            break;
-          }
-        } else if (itemCategory === 'meal' && itemData?.meal_type) {
-          const { data: conflicts } = await supabaseClient
-            .from('entries')
-            .select('id, data, raw_text')
-            .eq('user_id', userId)
-            .eq('category', 'meal')
-            .eq('data->>meal_type', itemData.meal_type)
-            .gte('entry_time', `${targetDate}T00:00:00Z`)
-            .lte('entry_time', `${targetDate}T23:59:59Z`);
-
-          if (conflicts && conflicts.length > 0) {
-            conflictEntryId = conflicts[0].id;
-            const existingText = conflicts[0].raw_text || conflicts[0].data?.items?.join(', ') || itemData.meal_type;
-            conflictDetails = `${itemData.meal_type} log ("${existingText}")`;
-            conflictingBulkIndex = i;
-            break;
-          }
-        } else if (itemCategory === 'work') {
-          const { data: conflicts } = await supabaseClient
-            .from('entries')
-            .select('id, data, raw_text')
-            .eq('user_id', userId)
-            .eq('category', 'work')
-            .gte('entry_time', `${targetDate}T00:00:00Z`)
-            .lte('entry_time', `${targetDate}T23:59:59Z`);
-
-          if (conflicts && conflicts.length > 0) {
-            conflictEntryId = conflicts[0].id;
-            const prevHours = Number(conflicts[0].data?.duration_hours) || 0;
-            const newHours = Number(itemData.duration_hours) || 0;
-            const accumTotal = prevHours + newHours;
-            const accumMsg = accumTotal > 0 ? ` (accumulate to ${accumTotal}h total)` : '';
-            conflictDetails = `work log (${prevHours > 0 ? prevHours + 'h' : conflicts[0].raw_text})${accumMsg}`;
-            conflictingBulkIndex = i;
-            // Save accumulative calculated payload inside item for State Machine
-            if (accumTotal > 0) {
-              item.accumulated_data = { ...conflicts[0].data, duration_hours: accumTotal };
-              item.accumulated_text = `Worked ${accumTotal} hours total (${conflicts[0].raw_text} + ${item.raw_text || newHours + 'h'})`;
-            }
-            break;
-          }
-        } else if (itemCategory === 'exercise') {
-          const { data: conflicts } = await supabaseClient
-            .from('entries')
-            .select('id, data, raw_text')
-            .eq('user_id', userId)
-            .eq('category', 'exercise')
-            .gte('entry_time', `${targetDate}T00:00:00Z`)
-            .lte('entry_time', `${targetDate}T23:59:59Z`);
-
-          if (conflicts && conflicts.length > 0) {
-            conflictEntryId = conflicts[0].id;
-            const prevMins = Number(conflicts[0].data?.duration_minutes) || 0;
-            const newMins = Number(itemData.duration_minutes) || 0;
-            const accumTotal = prevMins + newMins;
-            const accumMsg = accumTotal > 0 ? ` (accumulate to ${accumTotal} mins total)` : '';
-            conflictDetails = `exercise log (${prevMins > 0 ? prevMins + ' mins' : conflicts[0].raw_text})${accumMsg}`;
-            conflictingBulkIndex = i;
-            if (accumTotal > 0) {
-              item.accumulated_data = { ...conflicts[0].data, duration_minutes: accumTotal };
-              item.accumulated_text = `${itemData.activity || 'Exercise'} for ${accumTotal} mins total`;
-            }
-            break;
-          }
-        } else if (itemCategory === 'expense') {
-          const { data: conflicts } = await supabaseClient
-            .from('entries')
-            .select('id, data, raw_text')
-            .eq('user_id', userId)
-            .eq('category', 'expense')
-            .gte('entry_time', `${targetDate}T00:00:00Z`)
-            .lte('entry_time', `${targetDate}T23:59:59Z`);
-
-          if (conflicts && conflicts.length > 0) {
-            conflictEntryId = conflicts[0].id;
-            const prevAmount = Number(conflicts[0].data?.amount) || 0;
-            const newAmount = Number(itemData.amount) || 0;
-            const accumTotal = prevAmount + newAmount;
-            const accumMsg = accumTotal > 0 ? ` (accumulate to ₹${accumTotal} total)` : '';
-            conflictDetails = `expense log (₹${prevAmount})${accumMsg}`;
-            conflictingBulkIndex = i;
-            if (accumTotal > 0) {
-              item.accumulated_data = { ...conflicts[0].data, amount: accumTotal };
-              item.accumulated_text = `₹${accumTotal} total spent (${conflicts[0].data?.description || conflicts[0].raw_text} + ${itemData.description || item.raw_text})`;
-            }
-            break;
-          }
-        } else {
-          const embedPayload = `${itemCategory}: ${item.raw_text || trimmedText} - Data: ${JSON.stringify(itemData)}`;
-          const queryVector = await getEmbedding(embedPayload);
-
-          if (queryVector) {
-            const { data: matches } = await supabaseClient.rpc('match_entries', {
-              query_embedding: queryVector,
-              match_threshold: 0.85,
-              match_count: 5,
-            });
-
-            if (matches && matches.length > 0) {
-              const dateMatch = matches.find((m: any) => m.entry_time.split('T')[0] === targetDate);
-              if (dateMatch) {
-                conflictEntryId = dateMatch.id;
-                conflictDetails = `highly similar ${itemCategory} log ("${dateMatch.raw_text}")`;
-                conflictingBulkIndex = i;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (conflictEntryId) {
-        console.log(`[serve] Conflict intercepted programmatically: ${conflictDetails} (ID: ${conflictEntryId})`);
-
-        parsed.needs_clarification = true;
-        parsed.update_entry_id = conflictEntryId;
-        parsed.clarification_prompt = `You already logged a ${conflictDetails} for ${targetDate}. Do you want to update it, or keep both?`;
-
-        // Append Turn 1 variables to draftContext for the deterministic State Machine
-        parsed.raw_text = trimmedText;
-        parsed.entry_time = parsed.entry_time || new Date().toISOString();
-        if (!parsed.tags) parsed.tags = [];
-
-        if (parsed.action === 'bulk_insert' && conflictingBulkIndex >= 0) {
-          // Store the specific conflicting item as the target for update/insert in draftContext
-          const conflictingItem = parsed.bulk_entries[conflictingBulkIndex];
-          parsed.category = conflictingItem.category;
-          parsed.data = conflictingItem.data;
-          parsed.raw_text = conflictingItem.raw_text;
-        }
-
-        if (finalImageUrl) {
-          parsed.imageUrl = finalImageUrl;
-        }
-
-        return new Response(JSON.stringify({
-          entry: null,
-          acknowledgment: parsed.clarification_prompt,
-          needs_clarification: true,
-          draftContext: parsed,
-          interactiveCard: null,
-        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      const conflictResponse = await checkDuplicateConflict(parsed, trimmedText, userId, supabaseClient, finalImageUrl);
+      if (conflictResponse) {
+        return conflictResponse;
       }
     }
 
     if (parsed.needs_clarification) {
-      console.log('[serve] Request needs clarification. Prompting user.');
       parsed.raw_text = trimmedText;
       parsed.entry_time = parsed.entry_time || new Date().toISOString();
       if (!parsed.tags) parsed.tags = [];
-      if (finalImageUrl) {
-        parsed.imageUrl = finalImageUrl;
-      }
+      if (finalImageUrl) parsed.imageUrl = finalImageUrl;
+
       return new Response(JSON.stringify({
         entry: null,
         acknowledgment: parsed.clarification_prompt,
@@ -1594,13 +175,13 @@ ${historyContext || 'No past logs found.'}`;
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // Attach image_url if present directly to entry data payload
     if (finalImageUrl) {
       if (!parsed.data) parsed.data = {};
       parsed.data.image_url = finalImageUrl;
     }
 
-    const embedPayload = `${parsed.category}: ${trimmedText} - Data: ${JSON.stringify(parsed.data)}`;
+    // Contextual Embedding
+    const embedPayload = buildContextualPayload(trimmedText, parsed.category, parsed.data, parsed.entry_time);
     const embedding = await getEmbedding(embedPayload);
 
     const insertPayload: any = {
@@ -1612,10 +193,9 @@ ${historyContext || 'No past logs found.'}`;
       tags: parsed.tags || [],
       event_date: parsed.event_date || null
     };
-    if (embedding) {
-      insertPayload.embedding = embedding;
-    }
+    if (embedding) insertPayload.embedding = embedding;
 
+    // Handle Update Action
     if (parsed.action === 'update' && parsed.update_entry_id) {
       console.log('[serve] Updating existing entry ID:', parsed.update_entry_id);
       const { data: updated, error } = await supabaseClient
@@ -1624,10 +204,7 @@ ${historyContext || 'No past logs found.'}`;
         .eq('id', parsed.update_entry_id)
         .select();
 
-      if (error) {
-        console.error('[serve] Supabase database update error:', error.message);
-        throw new Error(error.message);
-      }
+      if (error) throw new Error(error.message);
 
       return new Response(JSON.stringify({
         entry: updated[0],
@@ -1637,14 +214,15 @@ ${historyContext || 'No past logs found.'}`;
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    // Handle Bulk Insert Action
     if (parsed.action === 'bulk_insert' && parsed.bulk_entries && parsed.bulk_entries.length > 0) {
       console.log(`[serve] Direct Bulk Inserting ${parsed.bulk_entries.length} entries...`);
       const insertRows = [];
       for (const entry of parsed.bulk_entries) {
         const raw = entry.raw_text || `${entry.category} entry`;
         const rowTags = (raw.match(/#([a-zA-Z0-9\-_]+)/g) || []).map((t: string) => t.substring(1).toLowerCase());
-        const embedPayload = `${entry.category || 'other'}: ${raw} - Data: ${JSON.stringify(entry.data || {})}`;
-        const embedding = await getEmbedding(embedPayload);
+        const rowEmbedPayload = buildContextualPayload(raw, entry.category || 'other', entry.data || {}, entry.entry_time);
+        const rowEmbedding = await getEmbedding(rowEmbedPayload);
 
         insertRows.push({
           user_id: userId,
@@ -1652,21 +230,14 @@ ${historyContext || 'No past logs found.'}`;
           category: entry.category || 'other',
           entry_time: entry.entry_time || new Date().toISOString(),
           data: entry.data || {},
-          embedding: embedding || undefined,
+          embedding: rowEmbedding || undefined,
           tags: rowTags,
           event_date: entry.event_date || null
         });
       }
 
-      const { data: inserted, error } = await supabaseClient
-        .from('entries')
-        .insert(insertRows)
-        .select();
-
-      if (error) {
-        console.error('[serve] Database direct bulk insert error:', error.message);
-        throw new Error(error.message);
-      }
+      const { data: inserted, error } = await supabaseClient.from('entries').insert(insertRows).select();
+      if (error) throw new Error(error.message);
 
       return new Response(JSON.stringify({
         entry: inserted[0],
@@ -1676,18 +247,10 @@ ${historyContext || 'No past logs found.'}`;
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-
-
+    // Standard Insert Action
     console.log('[serve] Inserting new log entry to database...');
-    const { data: inserted, error } = await supabaseClient
-      .from('entries')
-      .insert([insertPayload])
-      .select();
-
-    if (error) {
-      console.error('[serve] Supabase database insert error:', error.message);
-      throw new Error(error.message);
-    }
+    const { data: inserted, error } = await supabaseClient.from('entries').insert([insertPayload]).select();
+    if (error) throw new Error(error.message);
 
     return new Response(JSON.stringify({
       entry: inserted[0],
