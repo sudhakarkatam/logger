@@ -94,18 +94,38 @@ export function classifyIntent(text: string, hasImage: boolean, hasDraftContext:
 // Category detection via keyword mapping (replaces LLM Category Router)
 export function detectCategories(text: string): string[] {
   const lower = text.toLowerCase();
+  const allCategories = ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
   const map: Record<string, string[]> = {
-    meal: ['eat', 'ate', 'food', 'meal', 'breakfast', 'lunch', 'dinner', 'snack', 'oats', 'biryani', 'chicken', 'rice', 'cook', 'nutrition', 'calories', 'skip', 'skipped', 'drink', 'drank', 'coffee', 'tea'],
+    meal: ['eat', 'ate', 'food', 'meal', 'meals', 'breakfast', 'lunch', 'dinner', 'snack', 'oats', 'biryani', 'chicken', 'rice', 'cook', 'nutrition', 'calories', 'skip', 'skipped', 'drink', 'drank', 'coffee', 'tea'],
     sleep: ['sleep', 'slept', 'nap', 'rest', 'hours of sleep', 'insomnia', 'woke', 'wake'],
-    expense: ['spent', 'spend', 'expense', 'cost', 'paid', 'bill', 'bills', 'bought', 'purchase', 'rupees', 'inr', 'rs', 'money', 'wifi', 'rent'],
+    expense: ['spent', 'spend', 'expense', 'expenses', 'spendings', 'cost', 'paid', 'bill', 'bills', 'bought', 'purchase', 'rupees', 'inr', 'rs', 'money', 'wifi', 'rent'],
     mood: ['mood', 'feeling', 'happy', 'sad', 'anxious', 'stressed', 'tired', 'frustrated', 'exhausted', 'horrible', 'depressed', 'excited', 'good', 'bad'],
-    exercise: ['exercise', 'workout', 'gym', 'run', 'walk', 'jog', 'swim', 'cycling', 'workout', 'fitness', 'steps', 'km'],
+    exercise: ['exercise', 'exercises', 'workout', 'gym', 'run', 'walk', 'jog', 'swim', 'cycling', 'workout', 'fitness', 'steps', 'km'],
     work: ['work', 'worked', 'project', 'meeting', 'coding', 'office', 'laptop', 'client', 'study', 'studied']
   };
 
   const isGeneral = ['log', 'logs', 'history', 'everything', 'all', 'summary', 'summarize', 'report', 'show all', 'list all'].some(kw => lower.includes(kw));
   if (isGeneral) {
-    return ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
+    return allCategories;
+  }
+
+  // Detect EXCLUSION queries: "other than X", "apart from X", "besides X", "except X", "excluding X", "not including X"
+  const exclusionPattern = /(?:other\s+than|apart\s+from|besides|except(?:\s+for)?|excluding|not\s+including|aside\s+from)\s+(.+)/i;
+  const exclusionMatch = lower.match(exclusionPattern);
+  if (exclusionMatch) {
+    // Find which categories the user wants to EXCLUDE
+    const exclusionText = exclusionMatch[1];
+    const excludedCats: string[] = [];
+    for (const [cat, keywords] of Object.entries(map)) {
+      if (keywords.some(kw => exclusionText.includes(kw))) {
+        excludedCats.push(cat);
+      }
+    }
+    if (excludedCats.length > 0) {
+      // Return everything EXCEPT the excluded categories
+      const remaining = allCategories.filter(c => !excludedCats.includes(c));
+      return remaining.length > 0 ? remaining : allCategories;
+    }
   }
 
   const matched: string[] = [];
@@ -114,7 +134,7 @@ export function detectCategories(text: string): string[] {
       matched.push(cat);
     }
   }
-  return matched.length > 0 ? matched : ['meal', 'sleep', 'expense', 'mood', 'exercise', 'work', 'other'];
+  return matched.length > 0 ? matched : allCategories;
 }
 
 // Extract quantitative parameters deterministically where possible
