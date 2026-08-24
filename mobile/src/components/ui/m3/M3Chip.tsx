@@ -1,6 +1,7 @@
 import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, ViewStyle } from 'react-native';
-import { md3Colors, md3Typography } from '../../../theme';
+import { ViewStyle } from 'react-native';
+import { Chip as PaperChip } from 'react-native-paper';
+import { md3Colors } from '../../../theme';
 
 interface M3ChipProps {
   label: string;
@@ -10,57 +11,29 @@ interface M3ChipProps {
   style?: ViewStyle | ViewStyle[];
 }
 
-export default function M3Chip({ label, selected = false, onPress, icon, style }: M3ChipProps) {
+export default function M3Chip({ label, selected = false, onPress, style }: M3ChipProps) {
   return (
-    <TouchableOpacity
+    <PaperChip
+      selected={selected}
+      onPress={onPress}
+      mode={selected ? 'flat' : 'outlined'}
       style={[
-        styles.chip,
-        selected ? styles.selectedChip : styles.unselectedChip,
+        {
+          marginRight: 6,
+          marginVertical: 4,
+          borderRadius: 8,
+          backgroundColor: selected ? md3Colors.secondaryContainer : md3Colors.surfaceContainerHigh,
+        },
         style,
       ]}
-      onPress={onPress}
-      activeOpacity={0.7}
+      selectedColor={md3Colors.onSecondaryContainer}
+      textStyle={{
+        fontSize: 12,
+        fontWeight: selected ? 'bold' : 'normal',
+        color: selected ? md3Colors.onSecondaryContainer : md3Colors.onSurfaceVariant,
+      }}
     >
-      {icon ? <Text style={styles.icon}>{icon}</Text> : null}
-      <Text style={[styles.label, selected ? styles.selectedLabel : styles.unselectedLabel]}>
-        {label}
-      </Text>
-    </TouchableOpacity>
+      {label}
+    </PaperChip>
   );
 }
-
-const styles = StyleSheet.create({
-  chip: {
-    height: 32,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-    borderWidth: 1,
-    gap: 6,
-  },
-  unselectedChip: {
-    backgroundColor: md3Colors.surfaceContainerHigh,
-    borderColor: md3Colors.outlineVariant,
-  },
-  selectedChip: {
-    backgroundColor: md3Colors.secondaryContainer,
-    borderColor: md3Colors.primary,
-  },
-  label: {
-    ...md3Typography.labelSmall,
-    fontSize: 12,
-  },
-  unselectedLabel: {
-    color: md3Colors.onSurfaceVariant,
-  },
-  selectedLabel: {
-    color: md3Colors.onSecondaryContainer,
-    fontWeight: 'bold',
-  },
-  icon: {
-    fontSize: 14,
-  },
-});

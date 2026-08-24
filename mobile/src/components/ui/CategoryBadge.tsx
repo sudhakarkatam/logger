@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Chip as PaperChip } from 'react-native-paper';
 import { CATEGORY_META, Category } from '../../utils/constants';
 import { colors } from '../../theme';
 
@@ -16,38 +16,23 @@ export default function CategoryBadge({ category, size = 'small' }: CategoryBadg
   const isSmall = size === 'small';
 
   return (
-    <View style={[styles.badge, { backgroundColor: `${meta.color}20`, borderColor: `${meta.color}40` }]}>
-      <Text style={[styles.icon, isSmall && styles.iconSmall]}>{meta.icon}</Text>
-      <Text style={[styles.label, { color: meta.color }, isSmall && styles.labelSmall]}>
-        {meta.label.toUpperCase()}
-      </Text>
-    </View>
+    <PaperChip
+      compact={isSmall}
+      mode="flat"
+      style={{
+        backgroundColor: `${meta.color}20`,
+        borderColor: `${meta.color}40`,
+        borderWidth: 1,
+        borderRadius: 8,
+        alignSelf: 'flex-start',
+      }}
+      textStyle={{
+        color: meta.color,
+        fontSize: isSmall ? 10 : 12,
+        fontWeight: 'bold',
+      }}
+    >
+      {meta.icon} {meta.label.toUpperCase()}
+    </PaperChip>
   );
 }
-
-const styles = StyleSheet.create({
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  icon: {
-    fontSize: 12,
-    marginRight: 4,
-  },
-  iconSmall: {
-    fontSize: 10,
-  },
-  label: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  labelSmall: {
-    fontSize: 9,
-  },
-});

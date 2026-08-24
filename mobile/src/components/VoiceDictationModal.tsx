@@ -7,8 +7,10 @@ import {
   Modal,
   TextInput,
   Vibration,
+  Platform,
 } from 'react-native';
-import { md3Colors, md3Typography } from '../theme';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { theme } from '../theme';
 
 interface VoiceDictationModalProps {
   visible: boolean;
@@ -16,50 +18,10 @@ interface VoiceDictationModalProps {
   onVoiceTranscribed: (text: string) => void;
 }
 
-const VOICE_PRESETS = [
-  { label: '⏰ Remind me in 10 mins to check the oven', text: 'Remind me in 10 mins to check the oven' },
-  { label: '⏰ Remind me at 5 PM to call Sarah', text: 'Remind me at 5 PM to call Sarah' },
-  { label: '🍲 Ate 2 chapathi and chicken curry for lunch', text: 'Ate 2 chapathi and chicken curry for lunch' },
-  { label: '💳 Spent 250 on groceries at supermarket', text: 'Spent 250 on groceries at supermarket' },
-  { label: '🏃 Ran 5km in 25 minutes at morning park', text: 'Ran 5km in 25 minutes at morning park' },
-];
-
-// Helper to probe native module existence without throwing uncaught native errors
-function isNativeModuleRegistered(moduleName: string): boolean {
-  try {
-    const { NativeModules } = require('react-native');
-    if (NativeModules && NativeModules[moduleName]) return true;
-    const { requireNativeModule } = require('expo-modules-core');
-    if (requireNativeModule) {
-      try {
-        return !!requireNativeModule(moduleName);
-      } catch (_) {
-        return false;
-      }
-    }
-  } catch (_) {}
-  return false;
-}
-
-function getExpoSpeechRecognitionModule() {
-  try {
-    if (isNativeModuleRegistered('ExpoSpeechRecognition')) {
-      const mod = require('expo-speech-recognition');
-      return mod.ExpoSpeechRecognitionModule || null;
-    }
-  } catch (_) {}
-  return null;
-}
-
-function getNativeVoiceModule() {
-  try {
-    if (isNativeModuleRegistered('Voice') || isNativeModuleRegistered('RCTVoice')) {
-      const VoiceModule = require('@react-native-voice/voice');
-      return VoiceModule.default || VoiceModule;
-    }
-  } catch (_) {}
-  return null;
-}
+let ExpoSpeechRecognitionModule: any = null;
+try {
+  ExpoSpeechRecognitionModule = require('expo-speech-recognition').ExpoSpeechRecognitionModule;
+} catch (_) {}
 
 export default function VoiceDictationModal({
   visible,
@@ -68,99 +30,68 @@ export default function VoiceDictationModal({
 }: VoiceDictationModalProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [spokenText, setSpokenText] = useState('');
-  const [statusMessage, setStatusMessage] = useState('Tap Mic to start speaking');
   const webRecognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    if (!visible) {
-      stopListening();
+    let resultSub: any = null;
+    let errorSub: any = null;
+
+    if (visible) {
       setSpokenText('');
-      return;
+      startListening();
+    } else {
+      stopListening();
     }
 
-    setSpokenText('');
-    setupListeners();
+    if (ExpoSpeechRecognitionModule?.addListener) {
+      try {
+        resultSub = ExpoSpeechRecognitionModule.addListener('result', (event: any) => {
+          if (event?.results?.[0]?.transcript) {
+            setSpokenText(event.results[0].transcript);
+          }
+        });
+        errorSub = ExpoSpeechRecognitionModule.addListener('error', (event: any) => {
+          console.warn('Speech recognition error:', event);
+        });
+      } catch (_) {}
+    }
 
     return () => {
       stopListening();
+      resultSub?.remove?.();
+      errorSub?.remove?.();
     };
   }, [visible]);
 
-  function setupListeners() {
-    // 1. Check Expo Official expo-speech-recognition
-    const ExpoSpeech = getExpoSpeechRecognitionModule();
-    if (ExpoSpeech) {
-      try {
-        if (typeof ExpoSpeech.requestPermissionsAsync === 'function') {
-          ExpoSpeech.requestPermissionsAsync().catch(() => {});
-        }
-      } catch (_) {}
-    }
-
-    // 2. Check Legacy @react-native-voice/voice
-    const Voice = getNativeVoiceModule();
-    if (Voice) {
-      try {
-        Voice.onSpeechStart = () => {
-          setIsRecording(true);
-          setStatusMessage('🎙️ Listening... Speak now!');
-        };
-        Voice.onSpeechResults = (e: any) => {
-          if (e.value && e.value[0]) {
-            setSpokenText(e.value[0]);
-          }
-        };
-        Voice.onSpeechPartialResults = (e: any) => {
-          if (e.value && e.value[0]) {
-            setSpokenText(e.value[0]);
-          }
-        };
-        Voice.onSpeechError = (e: any) => {
-          console.log('Voice error:', e);
-          setIsRecording(false);
-        };
-        Voice.onSpeechEnd = () => {
-          setIsRecording(false);
-          setStatusMessage('Recording finished');
-        };
-      } catch (_) {}
-    }
-  }
-
   async function startListening() {
     setIsRecording(true);
-    setStatusMessage('🎙️ Listening... Speak now!');
+    setSpokenText('');
+
     try {
       Vibration.vibrate(50);
     } catch (_) {}
 
-    // A. Expo Official expo-speech-recognition
-    const ExpoSpeech = getExpoSpeechRecognitionModule();
-    if (ExpoSpeech && typeof ExpoSpeech.start === 'function') {
+    // 1. Try Native Expo Speech Recognition
+    if (ExpoSpeechRecognitionModule) {
       try {
-        await ExpoSpeech.start({ lang: 'en-US', interimResults: true }).catch(() => {});
-        return;
-      } catch (_) {}
+        const perms = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (perms?.granted) {
+          await ExpoSpeechRecognitionModule.start({
+            lang: 'en-US',
+            interimResults: true,
+            maxAlternatives: 1,
+          });
+          return;
+        }
+      } catch (err: any) {
+        console.warn('Native speech recognition start failed:', err);
+      }
     }
 
-    // B. Native @react-native-voice/voice
-    const Voice = getNativeVoiceModule();
-    if (Voice && typeof Voice.start === 'function') {
+    // 2. Try Web Speech API (if running on web or webview)
+    if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
       try {
-        await Voice.stop().catch(() => {});
-        await Voice.start('en-US');
-        return;
-      } catch (_) {}
-    }
-
-    // C. Web Speech API (Chrome / Webview)
-    const SpeechRecognition =
-      typeof window !== 'undefined'
-        ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-        : null;
-
-    if (SpeechRecognition) {
-      try {
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
         recognition.interimResults = true;
@@ -168,7 +99,7 @@ export default function VoiceDictationModal({
 
         recognition.onresult = (event: any) => {
           let current = '';
-          for (let i = 0; i < event.results.length; i++) {
+          for (let i = 0; i < event.results.length; ++i) {
             current += event.results[i][0].transcript;
           }
           setSpokenText(current);
@@ -180,27 +111,18 @@ export default function VoiceDictationModal({
 
         recognition.start();
         webRecognitionRef.current = recognition;
-      } catch (e) {
-        console.warn('Web Speech API error:', e);
+        return;
+      } catch (err: any) {
+        console.warn('Web Speech API start failed:', err);
       }
     }
   }
 
-  async function stopListening() {
+  function stopListening() {
     setIsRecording(false);
-    setStatusMessage('Tap Mic to start speaking');
-
-    const ExpoSpeech = getExpoSpeechRecognitionModule();
-    if (ExpoSpeech && typeof ExpoSpeech.stop === 'function') {
+    if (ExpoSpeechRecognitionModule?.stop) {
       try {
-        await ExpoSpeech.stop().catch(() => {});
-      } catch (_) {}
-    }
-
-    const Voice = getNativeVoiceModule();
-    if (Voice && typeof Voice.stop === 'function') {
-      try {
-        await Voice.stop().catch(() => {});
+        ExpoSpeechRecognitionModule.stop();
       } catch (_) {}
     }
 
@@ -214,67 +136,44 @@ export default function VoiceDictationModal({
 
   function handleConfirmText(textToUse: string) {
     stopListening();
-    onVoiceTranscribed(textToUse);
+    if (textToUse.trim()) {
+      onVoiceTranscribed(textToUse);
+    }
     onClose();
   }
 
+  if (!visible) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
-        <View style={styles.sheet} onStartShouldSetResponder={() => true}>
-          {/* Header */}
-          <View style={styles.topRow}>
-            <Text style={styles.sheetTitle}>🎙️ Voice Speech Dictation</Text>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Text style={{ color: md3Colors.outline, fontSize: 16 }}>✕</Text>
-            </TouchableOpacity>
-          </View>
+        <View style={styles.grokCapsuleContainer} onStartShouldSetResponder={() => true}>
+          {/* Dotted Waveform Line */}
+          <Text style={styles.dottedLine}>••••••••••••••••••••••••••••••••••••••••••••••••</Text>
 
-          {/* Active Recording Box */}
-          <View style={styles.listeningContainer}>
+          {/* Minimalist Spoken Text / Listening Indicator */}
+          <TextInput
+            style={styles.spokenInput}
+            value={spokenText}
+            placeholder={isRecording ? 'Listening...' : 'Tap ✓ to insert text'}
+            placeholderTextColor={theme.colors.onSurfaceVariant}
+            onChangeText={setSpokenText}
+            multiline
+          />
+
+          {/* Grok Minimalist Toolbar (X Cancel | ✓ Confirm) */}
+          <View style={styles.grokToolbar}>
+            <TouchableOpacity style={styles.circleBtnDanger} onPress={onClose}>
+              <MaterialCommunityIcons name="close" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
+
             <TouchableOpacity
-              style={[styles.micCircle, isRecording && styles.micCircleActive]}
-              onPress={isRecording ? stopListening : startListening}
-              activeOpacity={0.8}
+              style={[styles.circleBtnSuccess, !spokenText.trim() && { opacity: 0.5 }]}
+              onPress={() => handleConfirmText(spokenText)}
+              disabled={!spokenText.trim()}
             >
-              <Text style={{ fontSize: 36 }}>{isRecording ? '🔴' : '🎙️'}</Text>
+              <MaterialCommunityIcons name="check" size={22} color="#FFFFFF" />
             </TouchableOpacity>
-
-            <Text style={styles.listeningStatus}>{statusMessage}</Text>
-
-            {/* Editable Live Spoken Text Input */}
-            <TextInput
-              style={styles.spokenTextInput}
-              placeholder="Speak into microphone or type custom text..."
-              placeholderTextColor={md3Colors.outline}
-              value={spokenText}
-              onChangeText={setSpokenText}
-              multiline
-            />
-
-            {spokenText.trim().length > 0 && (
-              <TouchableOpacity
-                style={styles.useTextBtn}
-                onPress={() => handleConfirmText(spokenText)}
-              >
-                <Text style={styles.useTextBtnText}>✓ Insert Transcribed Text into Input Box</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Preset Samples */}
-          <Text style={styles.presetHeading}>Or Tap a Voice Sample Preset:</Text>
-          <View style={styles.presetList}>
-            {VOICE_PRESETS.map((item, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={styles.presetChip}
-                onPress={() => handleConfirmText(item.text)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.presetText}>{item.label}</Text>
-              </TouchableOpacity>
-            ))}
           </View>
         </View>
       </TouchableOpacity>
@@ -285,109 +184,52 @@ export default function VoiceDictationModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: 'rgba(0,0,0,0.75)',
     justifyContent: 'flex-end',
+    padding: theme.spacing.lg,
   },
-  sheet: {
-    backgroundColor: md3Colors.surfaceContainer,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: md3Colors.outlineVariant,
+  grokCapsuleContainer: {
+    backgroundColor: '#1E1E26',
+    borderRadius: theme.roundness.xl,
+    padding: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: '#2D2D3A',
   },
-  topRow: {
+  dottedLine: {
+    color: theme.colors.outline,
+    textAlign: 'center',
+    fontSize: 16,
+    letterSpacing: 2,
+    marginBottom: theme.spacing.sm,
+  },
+  spokenInput: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    minHeight: 40,
+    maxHeight: 90,
+    textAlign: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  grokToolbar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
   },
-  sheetTitle: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-    fontWeight: '800',
-  },
-  closeBtn: {
-    padding: 6,
-  },
-  listeningContainer: {
-    alignItems: 'center',
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  micCircle: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+  circleBtnDanger: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#374151',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 10,
-    borderWidth: 2,
-    borderColor: md3Colors.primary,
   },
-  micCircleActive: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    borderColor: md3Colors.error,
-  },
-  listeningStatus: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.primary,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  spokenTextInput: {
-    width: '100%',
-    backgroundColor: md3Colors.surfaceContainer,
-    color: md3Colors.onSurface,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 13,
-    minHeight: 50,
-    maxHeight: 100,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-    textAlignVertical: 'top',
-  },
-  useTextBtn: {
-    marginTop: 10,
-    backgroundColor: md3Colors.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    width: '100%',
+  circleBtnSuccess: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
-  },
-  useTextBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: 'bold',
-  },
-  presetHeading: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
-    marginBottom: 8,
-    fontWeight: 'bold',
-  },
-  presetList: {
-    gap: 6,
-    marginBottom: 10,
-  },
-  presetChip: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  presetText: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurface,
+    justifyContent: 'center',
   },
 });

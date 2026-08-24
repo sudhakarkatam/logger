@@ -1,7 +1,9 @@
-import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
-import { md3Typography } from '../theme';
-import { TabType, TabConfig } from './types';
+import React, { useEffect, useRef } from 'react';
+import { StyleSheet, View, Pressable, Platform, Animated } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { MaterialCommunityIcons, Ionicons, Octicons, MaterialIcons } from '@expo/vector-icons';
+import { TabType } from './types';
+import { theme } from '../theme';
 
 interface AppNavigatorProps {
   activeTab: TabType;
@@ -9,135 +11,173 @@ interface AppNavigatorProps {
   isDesktop?: boolean;
 }
 
-export const NAV_TABS: TabConfig[] = [
-  { id: 'home', label: 'Home', icon: '🏠' },
-  { id: 'chat', label: 'Chat', icon: '💬' },
-  { id: 'analytics', label: 'Analytics', icon: '📊' },
-  { id: 'notifications', label: 'Alerts', icon: '🔔' },
-  { id: 'settings', label: 'Settings', icon: '⚙️' },
+interface NavItemConfig {
+  key: TabType;
+  family: 'MaterialCommunityIcons' | 'Ionicons' | 'Octicons' | 'MaterialIcons';
+  activeIcon: string;
+  inactiveIcon: string;
+  label: string;
+}
+
+const NAV_ITEMS: NavItemConfig[] = [
+  {
+    key: 'home',
+    family: 'Octicons',
+    activeIcon: 'home',
+    inactiveIcon: 'home',
+    label: 'Home',
+  },
+  {
+    key: 'chat',
+    family: 'Ionicons',
+    activeIcon: 'chatbubbles',
+    inactiveIcon: 'chatbubbles-outline',
+    label: 'Chat',
+  },
+  {
+    key: 'analytics',
+    family: 'MaterialCommunityIcons',
+    activeIcon: 'google-analytics',
+    inactiveIcon: 'google-analytics',
+    label: 'Analytics',
+  },
+  {
+    key: 'notifications',
+    family: 'MaterialIcons',
+    activeIcon: 'alarm',
+    inactiveIcon: 'alarm',
+    label: 'Alerts',
+  },
+  {
+    key: 'settings',
+    family: 'Octicons',
+    activeIcon: 'gear',
+    inactiveIcon: 'gear',
+    label: 'Settings',
+  },
 ];
 
-export default function AppNavigator({ activeTab, onTabChange, isDesktop = false }: AppNavigatorProps) {
-  if (isDesktop) {
-    return (
-      <View style={styles.desktopNav}>
-        {NAV_TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
-          return (
-            <TouchableOpacity
-              key={tab.id}
-              style={[styles.desktopNavItem, isActive && styles.desktopNavItemActive]}
-              onPress={() => onTabChange(tab.id)}
-            >
-              <Text style={styles.desktopNavIcon}>{tab.icon}</Text>
-              <Text style={[styles.desktopNavLabel, isActive && styles.desktopNavLabelActive]}>
-                {tab.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-    );
-  }
+function NavTabButton({
+  item,
+  isActive,
+  onPress,
+}: {
+  item: NavItemConfig;
+  isActive: boolean;
+  onPress: () => void;
+}) {
+  const activeAnim = useRef(new Animated.Value(isActive ? 1 : 0)).current;
 
-  // Ultra-Clean Top App Navigation Dock (Minimalist, 0 clutter, transparent icon backgrounds)
+  useEffect(() => {
+    Animated.spring(activeAnim, {
+      toValue: isActive ? 1 : 0,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 100,
+    }).start();
+  }, [isActive]);
+
+  const scale = activeAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.7, 1],
+  });
+
+  const renderNavIcon = () => {
+    const iconName = isActive ? item.activeIcon : item.inactiveIcon;
+    const iconColor = isActive ? theme.colors.onSecondaryContainer : theme.colors.onSurfaceVariant;
+    const size = 24;
+
+    if (item.family === 'MaterialIcons') {
+      return <MaterialIcons name={iconName as any} size={size} color={iconColor} style={styles.icon} />;
+    }
+    if (item.family === 'Ionicons') {
+      return <Ionicons name={iconName as any} size={size} color={iconColor} style={styles.icon} />;
+    }
+    if (item.family === 'Octicons') {
+      return <Octicons name={iconName as any} size={size} color={iconColor} style={styles.icon} />;
+    }
+    return <MaterialCommunityIcons name={iconName as any} size={size} color={iconColor} style={styles.icon} />;
+  };
+
   return (
-    <View style={styles.bottomNav}>
-      {NAV_TABS.map((tab) => {
-        const isActive = activeTab === tab.id;
-        return (
-          <TouchableOpacity
-            key={tab.id}
-            style={styles.navItem}
-            onPress={() => onTabChange(tab.id)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.navIcon, isActive ? styles.navIconActive : styles.navIconInactive]}>
-              {tab.icon}
-            </Text>
-            <Text style={[styles.navLabel, isActive ? styles.navLabelActive : styles.navLabelInactive]}>
-              {tab.label}
-            </Text>
-            {isActive && <View style={styles.activeLine} />}
-          </TouchableOpacity>
-        );
-      })}
+    <Pressable
+      onPress={() => {
+        if (Platform.OS !== 'web') {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+        onPress();
+      }}
+      android_ripple={{ color: 'rgba(255, 255, 255, 0.12)', borderless: true, radius: 32 }}
+      style={styles.tabButton}
+    >
+      <View style={styles.iconContainer}>
+        <Animated.View
+          style={[
+            styles.activeIndicator,
+            {
+              opacity: activeAnim,
+              transform: [{ scaleX: scale }],
+            },
+          ]}
+        />
+        {renderNavIcon()}
+      </View>
+    </Pressable>
+  );
+}
+
+export default function AppNavigator({ activeTab, onTabChange }: AppNavigatorProps) {
+  return (
+    <View style={styles.barSurface}>
+      <View style={styles.navRow}>
+        {NAV_ITEMS.map((item) => (
+          <NavTabButton
+            key={item.key}
+            item={item}
+            isActive={activeTab === item.key}
+            onPress={() => onTabChange(item.key)}
+          />
+        ))}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  desktopNav: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  desktopNavItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 12,
-    gap: 6,
-  },
-  desktopNavItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  desktopNavIcon: {
-    fontSize: 16,
-  },
-  desktopNavLabel: {
-    ...md3Typography.labelLarge,
-    color: '#9CA3AF',
-  },
-  desktopNavLabelActive: {
-    color: '#FFFFFF',
-    fontWeight: 'bold',
-  },
-
-  // Ultra-Clean Modern Dock (Top App Style - Zero Clutter)
-  bottomNav: {
-    height: 64,
-    flexDirection: 'row',
-    backgroundColor: '#0F0F12',
+  barSurface: {
+    backgroundColor: theme.colors.surfaceContainer,
     borderTopWidth: 1,
-    borderTopColor: '#1F1F24',
-    paddingHorizontal: 10,
-    justifyContent: 'space-around',
-    alignItems: 'center',
+    borderTopColor: theme.colors.outlineVariant,
+    elevation: 3,
   },
-  navItem: {
+  navRow: {
+    flexDirection: 'row',
+    height: 64,
+    alignItems: 'center',
+    justifyContent: 'space-around',
+  },
+  tabButton: {
+    flex: 1,
+    height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    flex: 1,
-    paddingVertical: 4,
+    minWidth: 48,
   },
-  navIcon: {
-    fontSize: 20,
+  iconContainer: {
+    width: 56,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
   },
-  navIconActive: {
-    opacity: 1,
+  activeIndicator: {
+    position: 'absolute',
+    width: 56,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: theme.colors.secondaryContainer,
   },
-  navIconInactive: {
-    opacity: 0.45,
-  },
-  navLabel: {
-    fontSize: 11,
-    marginTop: 3,
-  },
-  navLabelActive: {
-    color: '#6366F1',
-    fontWeight: '800',
-  },
-  navLabelInactive: {
-    color: '#71717A',
-    fontWeight: '500',
-  },
-  activeLine: {
-    width: 16,
-    height: 2.5,
-    borderRadius: 1.5,
-    backgroundColor: '#6366F1',
-    marginTop: 3,
+  icon: {
+    zIndex: 2,
   },
 });

@@ -6,18 +6,18 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  FlatList,
   useWindowDimensions,
   RefreshControl,
 } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import { md3Colors, md3Typography } from '../theme';
-import { getWeekData, queryEntries, Entry } from '../services/api';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { theme } from '../theme';
+import { queryEntries, Entry } from '../services/api';
 import { getGreeting, calculateStreak } from '../utils/formatters';
-import M3Card from './ui/m3/M3Card';
-import M3Chip from './ui/m3/M3Chip';
+import BuddyCard from './ui/m3/BuddyCard';
+import BuddyChip from './ui/m3/BuddyChip';
+import BuddyButton from './ui/m3/BuddyButton';
 import StreakBadge from './ui/StreakBadge';
-import CategoryBadge from './ui/CategoryBadge';
 
 interface HomeScreenProps {
   onNavigateTab: (tab: 'chat' | 'analytics' | 'pantry' | 'timeline' | 'settings') => void;
@@ -25,11 +25,9 @@ interface HomeScreenProps {
 }
 
 export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProps) {
-  const [recentEntries, setRecentEntries] = useState<Entry[]>([]);
   const [allEntries, setAllEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [aiInsight, setAiInsight] = useState<string | null>(null);
   const [todayCounts, setTodayCounts] = useState({
     meal: 0,
     exercise: 0,
@@ -38,7 +36,6 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
   });
 
   const { width } = useWindowDimensions();
-  const isDesktop = width > 768;
 
   useEffect(() => {
     fetchHomeData();
@@ -48,73 +45,56 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
     try {
       setLoading(true);
       const res = await queryEntries(undefined, 30);
-      const data = res.entries || [];
-      setAllEntries(data);
-      setRecentEntries(data.slice(0, 8));
+      const entriesList = Array.isArray(res) ? res : [];
+      setAllEntries(entriesList);
 
-      const startOfDay = new Date();
-      startOfDay.setHours(0, 0, 0, 0);
+      const todayStr = new Date().toISOString().split('T')[0];
+      const todayLogs = entriesList.filter((e) => e.created_at && e.created_at.startsWith(todayStr));
 
-      const counts = { meal: 0, exercise: 0, mood: 0, sleep: 0 };
-      data.forEach((entry) => {
-        const entryDate = new Date(entry.entry_time || entry.created_at);
-        if (entryDate >= startOfDay) {
-          const cat = (entry.category || '').toLowerCase();
-          if (cat in counts) {
-            counts[cat as keyof typeof counts] += 1;
-          }
-        }
+      setTodayCounts({
+        meal: todayLogs.filter((e) => e.category === 'meal').length,
+        exercise: todayLogs.filter((e) => e.category === 'exercise').length,
+        mood: todayLogs.filter((e) => e.category === 'mood').length,
+        sleep: todayLogs.filter((e) => e.category === 'sleep').length,
       });
-      setTodayCounts(counts);
-
-      try {
-        const weekInfo = await getWeekData(1, 1, false);
-        if (weekInfo.stats) {
-          setAiInsight(
-            `Logged ${weekInfo.stats.totalEntries} events across ${weekInfo.stats.daysLogged} days. Keep up your daily momentum!`
-          );
-        }
-      } catch (_) {
-        setAiInsight('Consistency builds long-term clarity. Tap Quick Actions to record your activities.');
-      }
     } catch (err: any) {
-      console.log('[Home] Error fetching home data:', err.message);
+      console.log('Error loading home data:', err.message);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }
 
-  const loggedCount = Object.values(todayCounts).filter((c) => c > 0).length;
-  const progressPercent = Math.min(100, Math.round((loggedCount / 4) * 100));
-
   const exerciseStreak = calculateStreak(allEntries, 'exercise');
   const waterStreak = calculateStreak(allEntries, 'water');
-  const sleepStreak = calculateStreak(allEntries, 'sleep', (e) => Number(e.data?.hours || 0) >= 7);
+  const sleepStreak = calculateStreak(allEntries, 'sleep');
 
-  const quickActions = [
-    { label: 'Log Meal', prefix: 'log meal: ', icon: '🍲', desc: 'Breakfast, lunch, dinner', color: md3Colors.catMeal },
-    { label: 'Log Workout', prefix: 'log exercise: ', icon: '🏃', desc: 'Run, gym, walk', color: md3Colors.catExercise },
-    { label: 'Log Mood', prefix: 'log mood: ', icon: '🧠', desc: 'Energy & state', color: md3Colors.catMood },
-    { label: 'Log Expense', prefix: 'log expense: ', icon: '💳', desc: 'Daily spendings', color: md3Colors.catExpense },
-  ];
+  const loggedCount = (todayCounts.meal > 0 ? 1 : 0) + (todayCounts.exercise > 0 ? 1 : 0) + (todayCounts.mood > 0 ? 1 : 0) + (todayCounts.sleep > 0 ? 1 : 0);
+  const progressPercent = Math.round((loggedCount / 4) * 100);
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={styles.content}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchHomeData(); }} tintColor={md3Colors.primary} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={refreshing}
+          onRefresh={() => {
+            setRefreshing(true);
+            fetchHomeData();
+          }}
+          tintColor={theme.colors.primary}
+        />
+      }
     >
       {/* Greeting Header */}
       <View style={styles.headerRow}>
         <View>
-          <Text style={styles.greetingTitle}>{getGreeting()}, Buddy 👋</Text>
+          <Text style={styles.greetingTitle}>{getGreeting()} 👋</Text>
           <Text style={styles.greetingSub}>Your Personal AI Command Center</Text>
         </View>
 
-        <TouchableOpacity style={styles.newLogBtn} onPress={() => onNavigateTab('chat')}>
-          <Text style={styles.newLogBtnText}>+ New Log</Text>
-        </TouchableOpacity>
+        <BuddyButton label="+ New Log" onPress={() => onNavigateTab('chat')} variant="filled" icon="plus" />
       </View>
 
       {/* Streak Badges */}
@@ -127,7 +107,7 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
       )}
 
       {/* Material 3 Habit Donut Card */}
-      <M3Card variant="elevated" style={styles.progressCard}>
+      <BuddyCard variant="elevated" style={styles.progressCard}>
         <View style={styles.progressRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.cardHeaderTitle}>Daily Habit Goal</Text>
@@ -136,21 +116,21 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
             </Text>
 
             <View style={styles.habitChipsRow}>
-              <M3Chip label={`🍲 Meal ${todayCounts.meal > 0 ? '✓' : ''}`} selected={todayCounts.meal > 0} onPress={() => onQuickLog('log meal: ')} />
-              <M3Chip label={`🏃 Exercise ${todayCounts.exercise > 0 ? '✓' : ''}`} selected={todayCounts.exercise > 0} onPress={() => onQuickLog('log exercise: ')} />
-              <M3Chip label={`🧠 Mood ${todayCounts.mood > 0 ? '✓' : ''}`} selected={todayCounts.mood > 0} onPress={() => onQuickLog('log mood: ')} />
+              <BuddyChip label={`Meal ${todayCounts.meal > 0 ? '✓' : ''}`} selected={todayCounts.meal > 0} onPress={() => onQuickLog('log meal: ')} icon="food-apple" />
+              <BuddyChip label={`Exercise ${todayCounts.exercise > 0 ? '✓' : ''}`} selected={todayCounts.exercise > 0} onPress={() => onQuickLog('log exercise: ')} icon="run-fast" />
+              <BuddyChip label={`Mood ${todayCounts.mood > 0 ? '✓' : ''}`} selected={todayCounts.mood > 0} onPress={() => onQuickLog('log mood: ')} icon="brain" />
             </View>
           </View>
 
           {/* SVG Donut Ring */}
           <View style={styles.donutContainer}>
             <Svg width={80} height={80} viewBox="0 0 100 100">
-              <Circle cx="50" cy="50" r="40" stroke={md3Colors.surfaceContainer} strokeWidth="12" fill="none" />
+              <Circle cx="50" cy="50" r="40" stroke={theme.colors.surfaceContainerHighest} strokeWidth="12" fill="none" />
               <Circle
                 cx="50"
                 cy="50"
                 r="40"
-                stroke={md3Colors.primary}
+                stroke={theme.colors.primary}
                 strokeWidth="12"
                 fill="none"
                 strokeDasharray={`${2 * Math.PI * 40}`}
@@ -164,21 +144,24 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
             </View>
           </View>
         </View>
-      </M3Card>
+      </BuddyCard>
 
       {/* 1-Tap Instant Counter Shortcuts */}
-      <Text style={styles.sectionHeader}>⚡ Quick Shortcuts</Text>
+      <Text style={styles.sectionHeader}>Quick Shortcuts</Text>
       <View style={styles.instantPillsRow}>
         <TouchableOpacity style={styles.instantPill} onPress={() => onQuickLog('log water: 1 glass (250ml)')}>
-          <Text style={styles.instantPillText}>💧 +1 Glass Water</Text>
+          <MaterialCommunityIcons name="water-outline" size={20} color={theme.colors.primary} />
+          <Text style={styles.instantPillText}>+1 Glass Water</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.instantPill} onPress={() => onQuickLog('log coffee: 1 cup espresso')}>
-          <Text style={styles.instantPillText}>☕ +1 Cup Coffee</Text>
+          <MaterialCommunityIcons name="coffee-outline" size={20} color={theme.colors.primary} />
+          <Text style={styles.instantPillText}>+1 Cup Coffee</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.instantPill} onPress={() => onQuickLog('log workout: 30 mins cardio')}>
-          <Text style={styles.instantPillText}>🏃 30m Workout</Text>
+          <MaterialCommunityIcons name="run-fast" size={20} color={theme.colors.primary} />
+          <Text style={styles.instantPillText}>30m Workout</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -188,218 +171,101 @@ export default function HomeScreen({ onNavigateTab, onQuickLog }: HomeScreenProp
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: md3Colors.background,
+    backgroundColor: theme.colors.background,
   },
   content: {
-    padding: 16,
-    paddingBottom: 40,
+    padding: theme.spacing.lg,
+    paddingBottom: theme.spacing.xxl,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: theme.spacing.lg,
   },
   greetingTitle: {
-    ...md3Typography.headlineMedium,
-    color: md3Colors.onBackground,
+    ...theme.typography.headline,
+    color: theme.colors.onBackground,
+    fontWeight: 'bold',
   },
   greetingSub: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
+    ...theme.typography.label,
+    color: theme.colors.onSurfaceVariant,
     marginTop: 2,
-  },
-  newLogBtn: {
-    backgroundColor: md3Colors.primary,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-  },
-  newLogBtnText: {
-    ...md3Typography.labelLarge,
-    color: md3Colors.onPrimary,
   },
   streaksRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginBottom: 12,
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
   },
   progressCard: {
-    marginBottom: 20,
-    backgroundColor: md3Colors.surfaceContainerHighest,
+    backgroundColor: theme.colors.surfaceContainer,
+    borderRadius: theme.roundness.xl,
+    padding: theme.spacing.lg,
+    marginBottom: theme.spacing.lg,
   },
   progressRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   cardHeaderTitle: {
-    ...md3Typography.titleLarge,
-    color: md3Colors.onSurface,
+    ...theme.typography.title,
+    color: theme.colors.onSurface,
+    fontWeight: 'bold',
   },
   cardHeaderSub: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurfaceVariant,
+    ...theme.typography.body,
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 13,
     marginTop: 2,
-    marginBottom: 12,
+    marginBottom: theme.spacing.md,
   },
   habitChipsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 4,
+    gap: theme.spacing.xs,
   },
   donutContainer: {
-    position: 'relative',
     width: 80,
     height: 80,
-    alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 12,
+    alignItems: 'center',
+    marginLeft: theme.spacing.md,
   },
   donutTextOverlay: {
     position: 'absolute',
     alignItems: 'center',
-    justifyContent: 'center',
   },
   donutPercentText: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
+    color: theme.colors.onSurface,
+    fontSize: 14,
     fontWeight: 'bold',
   },
   sectionHeader: {
-    ...md3Typography.titleLarge,
-    color: md3Colors.onBackground,
-    marginTop: 12,
-    marginBottom: 12,
-  },
-  quickGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  quickTileCardContainer: {
-    width: '48%',
-    marginBottom: 12,
-  },
-  quickTileCard: {
-    backgroundColor: md3Colors.surfaceContainerHigh,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    minHeight: 110,
-    justifyContent: 'space-between',
-  },
-  quickTileTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  quickTileIconBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickTileIcon: {
-    fontSize: 20,
-  },
-  quickTileArrow: {
-    fontSize: 16,
+    ...theme.typography.title,
+    color: theme.colors.onSurface,
     fontWeight: 'bold',
-  },
-  quickTileLabel: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-    fontWeight: '700',
-  },
-  quickTileDesc: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
-    marginTop: 2,
+    marginBottom: theme.spacing.sm,
+    marginTop: theme.spacing.sm,
   },
   instantPillsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+    gap: theme.spacing.xs,
   },
   instantPill: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
+    flex: 1,
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: theme.roundness.md,
+    alignItems: 'center',
+    gap: 4,
     borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+    borderColor: theme.colors.outlineVariant,
   },
   instantPillText: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurface,
-    fontWeight: '600',
-  },
-  aiCard: {
-    marginBottom: 20,
-    borderColor: md3Colors.outlineVariant,
-  },
-  aiHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  aiTitle: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.primary,
-  },
-  aiLink: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.secondary,
-  },
-  aiText: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurfaceVariant,
-    fontStyle: 'italic',
-    lineHeight: 20,
-  },
-  recentHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  seeAllText: {
-    ...md3Typography.labelLarge,
-    color: md3Colors.primary,
-  },
-  recentList: {
-    paddingRight: 16,
-  },
-  recentCard: {
-    width: 190,
-    marginRight: 12,
-    minHeight: 100,
-    justifyContent: 'space-between',
-    marginVertical: 0,
-  },
-  recentRawText: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurface,
-    marginTop: 4,
-  },
-  recentTime: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.outline,
-    marginTop: 8,
-  },
-  emptyBox: {
-    backgroundColor: md3Colors.surfaceContainer,
-    padding: 20,
-    borderRadius: 16,
-    alignItems: 'center',
-  },
-  emptyText: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurfaceVariant,
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 11,
+    fontWeight: 'bold',
   },
 });

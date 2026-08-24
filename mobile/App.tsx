@@ -23,6 +23,19 @@ import NotificationHubTab from './src/components/NotificationHubTab';
 import AppNavigator from './src/navigation/AppNavigator';
 import { TabType } from './src/navigation/types';
 import { md3Colors, md3Typography } from './src/theme';
+import { PaperProvider, MD3DarkTheme } from 'react-native-paper';
+
+const paperTheme = {
+  ...MD3DarkTheme,
+  colors: {
+    ...MD3DarkTheme?.colors,
+    primary: md3Colors.primary,
+    surface: md3Colors.surfaceContainer,
+    background: md3Colors.background,
+    secondaryContainer: md3Colors.secondaryContainer,
+    onSecondaryContainer: md3Colors.onSecondaryContainer,
+  },
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('home');
@@ -90,7 +103,8 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider>
+    <PaperProvider theme={paperTheme}>
+      <SafeAreaProvider>
       <SafeAreaView style={styles.safeArea} edges={isFullScreenView ? ['right', 'left', 'bottom'] : ['top', 'right', 'left', 'bottom']}>
         <StatusBar barStyle="light-content" translucent={true} backgroundColor="transparent" />
 
@@ -172,6 +186,7 @@ export default function App() {
         )}
       </SafeAreaView>
     </SafeAreaProvider>
+  </PaperProvider>
   );
 }
 

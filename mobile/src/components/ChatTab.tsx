@@ -12,11 +12,15 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Modal,
   Keyboard,
+  StatusBar,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { md3Colors, md3Typography } from '../theme';
+import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { md3Colors, md3Typography, theme } from '../theme';
 import { sendMessage, uploadMedia, deleteEntry, queryEntries, getLocalSettings, saveLocalSettings } from '../services/api';
 import { CATEGORY_CHIPS, DEFAULT_PRESETS, QUICK_MODELS, PROVIDER_DISPLAY, Provider } from '../utils/constants';
 import { parseNaturalLanguageReminder } from '../services/alarms';
@@ -25,6 +29,8 @@ import MarkdownRenderer from './ui/MarkdownRenderer';
 import CategoryBadge from './ui/CategoryBadge';
 import M3Chip from './ui/m3/M3Chip';
 import VoiceDictationModal from './VoiceDictationModal';
+import { getGreeting } from '../utils/formatters';
+import { Portal, Dialog, Button as PaperButton, Modal as PaperModal, Surface, IconButton, Chip as PaperChip, Snackbar } from 'react-native-paper';
 
 interface ChatMessage {
   id: string;
@@ -43,6 +49,7 @@ interface ChatTabProps {
 }
 
 export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
+  const insets = useSafeAreaInsets();
   const [inputText, setInputText] = useState(initialText || '');
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -53,40 +60,91 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [showCategoryDrawer, setShowCategoryDrawer] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
-
   // Draft Context & Undo Toast
   const [draftContext, setDraftContext] = useState<any | null>(null);
   const [lastLoggedEntry, setLastLoggedEntry] = useState<any | null>(null);
   const [showUndoToast, setShowUndoToast] = useState(false);
 
-  const flatListRef = useRef<FlatList>(null);
+  // Quick Log Modal State
+  const [quickLogModalConfig, setQuickLogModalConfig] = useState<{
+    visible: boolean;
+    type: 'work' | 'exercise' | 'coffee' | 'water';
+    title: string;
+    unit: string;
+    icon: string;
+    defaultValue: string;
+    presets: string[];
+  }>({
+    visible: false,
+    type: 'work',
+    title: 'Work Hours',
+    unit: 'hours',
+    icon: 'briefcase-outline',
+    defaultValue: '8',
+    presets: ['2', '4', '6', '8'],
+  });
+  const [quickLogInputValue, setQuickLogInputValue] = useState('8');
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome',
-      sender: 'ai',
-      text: '👋 **Welcome to your AI Second Brain.**\nType what you did today (e.g. *Ate 2 chapathi for lunch*, *Spent 150 on groceries*, *5k run in 25m*), or tap **+** below for Material 3 log templates.',
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ]);
-
-  useEffect(() => {
-    loadSavedSettings();
-  }, []);
-
-  useEffect(() => {
-    if (initialText) {
-      setInputText(initialText);
+  function openQuickLogModal(
+    type: 'work' | 'exercise' | 'coffee' | 'water',
+    title: string,
+    unit: string,
+    icon: string,
+    defaultValue: string,
+    presets: string[]
+  ) {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     }
-  }, [initialText]);
-
-  async function loadSavedSettings() {
-    const s = await getLocalSettings();
-    setProvider(s.provider as Provider);
-    setModel(s.model);
+    setQuickLogModalConfig({
+      visible: true,
+      type,
+      title,
+      unit,
+      icon,
+      defaultValue,
+      presets,
+    });
+    setQuickLogInputValue(defaultValue);
   }
 
-  async function handleQuickModelSwitch(newProvider: Provider, newModel: string) {
+  function handleConfirmQuickLog() {
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+    const { type, unit } = quickLogModalConfig;
+    const val = quickLogInputValue.trim() || '1';
+    setQuickLogModalConfig((prev) => ({ ...prev, visible: false }));
+    handleSend(`log ${type}: ${val} ${unit}`);
+  }
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  const flatListRef = useRef<FlatList>(null);
+
+  const [userAvatar, setUserAvatar] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadSettings();
+    loadUserAvatar();
+  }, []);
+
+  async function loadUserAvatar() {
+    try {
+      const savedImg = await AsyncStorage.getItem('@buddy_profile_image');
+      if (savedImg) setUserAvatar(savedImg);
+    } catch (_) {}
+  }
+
+  async function loadSettings() {
+    try {
+      const s = await getLocalSettings();
+      if (s.provider) setProvider(s.provider);
+      if (s.model) setModel(s.model);
+    } catch (_) {}
+  }
+
+  async function handleSelectModel(newProvider: Provider, newModel: string) {
     setProvider(newProvider);
     setModel(newModel);
     await saveLocalSettings({ provider: newProvider, model: newModel });
@@ -96,6 +154,10 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
   async function handleSend(textOverride?: string, cardDraftContext: any = null) {
     const textToSend = textOverride !== undefined ? textOverride : inputText;
     if ((!textToSend.trim() && !selectedImage) || loading) return;
+
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch (_) {}
 
     let publicImageUrl: string | undefined = undefined;
 
@@ -123,19 +185,17 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         }
       }
 
-      const historyPayload = messages.slice(-8).map(m => ({
+      const historyPayload = messages.slice(-8).map((m) => ({
         sender: m.sender,
-        text: m.text
+        text: m.text,
       }));
 
-      // Phase 13: Check if input text is a natural language relative time reminder ("Remind me in 10 mins...")
+      // Check if input text is a natural language relative time reminder ("Remind me in 10 mins...")
       const timeParsed = parseNaturalLanguageReminder(textToSend);
       if (timeParsed.isTimeReminder) {
         if (timeParsed.minutesDelay) {
           const secondsDelay = timeParsed.minutesDelay * 60;
           const targetTime = new Date(Date.now() + secondsDelay * 1000);
-          const hr = targetTime.getHours();
-          const min = targetTime.getMinutes();
           await scheduleRelativeReminder('✨ Buddy Reminder', timeParsed.reminderText || 'Time reminder', secondsDelay);
 
           const formattedTargetTime = targetTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -183,20 +243,17 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
       if (response.entry) {
         setLastLoggedEntry(response.entry);
         setShowUndoToast(true);
+        onLogAdded();
         setTimeout(() => setShowUndoToast(false), 7000);
       }
-
-      onLogAdded();
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: 'ai',
-          text: `⚠️ **Connection issue**: ${err.message || 'Please check network or settings.'}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
+      const errorMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai',
+        text: `⚠️ **Connection Issue**: ${err.message || 'Unable to communicate with AI server.'}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
@@ -253,60 +310,39 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
     }
   }
 
-  useEffect(() => {
-    if (typeof Keyboard === 'undefined' || !Keyboard?.addListener) return;
-
-    try {
-      const showSub = Keyboard.addListener(
-        Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-        () => {
-          setTimeout(() => {
-            if (messages && messages.length > 0) {
-              try {
-                flatListRef.current?.scrollToEnd({ animated: true });
-              } catch (_) {}
-            }
-          }, 100);
-        }
-      );
-      return () => showSub?.remove();
-    } catch (_) {}
-  }, [messages]);
-
   return (
     <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
+      style={styles.grokContainer}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 20}
     >
-      {/* Top Controls: Mode Switcher + LLM Selector */}
-      <View style={styles.topControlBar}>
-        <View style={styles.modeTabs}>
+      {/* Grok Header Bar: Centered Mode Switcher Tabs (Ask | Coach | Chef) */}
+      <View style={styles.grokHeader}>
+        <View style={styles.grokTabSwitcher}>
           <TouchableOpacity
-            style={[styles.modeTab, chatMode === 'normal' && styles.modeTabActive]}
+            style={[styles.grokTab, chatMode === 'normal' && styles.grokTabActive]}
             onPress={() => setChatMode('normal')}
           >
-            <Text style={[styles.modeTabText, chatMode === 'normal' && styles.modeTabTextActive]}>💬 General</Text>
+            <Text style={[styles.grokTabText, chatMode === 'normal' && styles.grokTabTextActive]}>Ask</Text>
+            {chatMode === 'normal' && <View style={styles.grokTabIndicator} />}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.modeTab, chatMode === 'chef' && styles.modeTabChefActive]}
-            onPress={() => setChatMode('chef')}
-          >
-            <Text style={[styles.modeTabText, chatMode === 'chef' && styles.modeTabTextChefActive]}>👨‍🍳 Chef AI</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.modeTab, chatMode === 'lifegpt' && styles.modeTabLifeActive]}
+            style={[styles.grokTab, chatMode === 'lifegpt' && styles.grokTabActive]}
             onPress={() => setChatMode('lifegpt')}
           >
-            <Text style={[styles.modeTabText, chatMode === 'lifegpt' && styles.modeTabTextLifeActive]}>🧠 Coach</Text>
+            <Text style={[styles.grokTabText, chatMode === 'lifegpt' && styles.grokTabTextActive]}>Coach</Text>
+            {chatMode === 'lifegpt' && <View style={styles.grokTabIndicator} />}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.grokTab, chatMode === 'chef' && styles.grokTabActive]}
+            onPress={() => setChatMode('chef')}
+          >
+            <Text style={[styles.grokTabText, chatMode === 'chef' && styles.grokTabTextActive]}>Chef</Text>
+            {chatMode === 'chef' && <View style={styles.grokTabIndicator} />}
           </TouchableOpacity>
         </View>
-
-        <TouchableOpacity style={styles.modelPickerBtn} onPress={() => setShowModelPicker(true)}>
-          <Text style={styles.modelPickerBtnText}>✨ {model.split('/').pop()} ▾</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Messages Stream */}
@@ -314,6 +350,62 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         ref={flatListRef}
         data={messages}
         keyExtractor={(item) => item.id}
+        ListEmptyComponent={
+          <View style={styles.proactiveHeroContainer}>
+            {/* Greeting Header */}
+            <View style={styles.proactiveHeader}>
+              <Text style={styles.proactiveGreetingTitle}>{getGreeting()} 👋</Text>
+              <Text style={styles.proactiveGreetingSub}>Quick Log Activities or Start a Conversation</Text>
+            </View>
+
+            {/* 2x2 Material 3 Ultra-Compact Micro-Chips Grid */}
+            <View style={styles.quickGrid}>
+              {/* Work Card */}
+              <Surface style={styles.quickTile} elevation={1}>
+                <TouchableOpacity
+                  style={styles.quickTileInner}
+                  onPress={() => openQuickLogModal('work', 'Log Work Hours', 'hours', 'briefcase-outline', '8', ['2', '4', '6', '8'])}
+                >
+                  <MaterialCommunityIcons name="briefcase-outline" size={18} color="#6366F1" />
+                  <Text style={styles.quickTileTitle}>Work</Text>
+                </TouchableOpacity>
+              </Surface>
+
+              {/* Exercise Card */}
+              <Surface style={styles.quickTile} elevation={1}>
+                <TouchableOpacity
+                  style={styles.quickTileInner}
+                  onPress={() => openQuickLogModal('exercise', 'Log Exercise', 'minutes', 'run-fast', '30', ['15', '30', '45', '60'])}
+                >
+                  <MaterialCommunityIcons name="run-fast" size={18} color="#F59E0B" />
+                  <Text style={styles.quickTileTitle}>Exercise</Text>
+                </TouchableOpacity>
+              </Surface>
+
+              {/* Coffee Card */}
+              <Surface style={styles.quickTile} elevation={1}>
+                <TouchableOpacity
+                  style={styles.quickTileInner}
+                  onPress={() => openQuickLogModal('coffee', 'Log Coffee', 'cups', 'coffee-outline', '1', ['1', '2', '3'])}
+                >
+                  <MaterialCommunityIcons name="coffee-outline" size={18} color="#D97706" />
+                  <Text style={styles.quickTileTitle}>Coffee</Text>
+                </TouchableOpacity>
+              </Surface>
+
+              {/* Water Card */}
+              <Surface style={styles.quickTile} elevation={1}>
+                <TouchableOpacity
+                  style={styles.quickTileInner}
+                  onPress={() => openQuickLogModal('water', 'Log Water', 'glasses', 'water-outline', '2', ['1', '2', '4', '6'])}
+                >
+                  <MaterialCommunityIcons name="water-outline" size={18} color="#3B82F6" />
+                  <Text style={styles.quickTileTitle}>Water</Text>
+                </TouchableOpacity>
+              </Surface>
+            </View>
+          </View>
+        }
         contentContainerStyle={styles.messagesContainer}
         onContentSizeChange={() => {
           if (messages && messages.length > 0) {
@@ -335,11 +427,11 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
 
               <MarkdownRenderer content={item.text} textStyle={item.sender === 'user' ? styles.userText : styles.aiText} />
 
-              <Text style={[styles.msgTime, item.sender === 'user' && { color: md3Colors.onPrimary }]}>
+              <Text style={[styles.msgTime, item.sender === 'user' && { color: 'rgba(255,255,255,0.6)' }]}>
                 {item.timestamp}
               </Text>
 
-              {/* Interactive Card */}
+              {/* Interactive Duplicate Card */}
               {item.interactiveCard && (
                 <View style={styles.interactiveCard}>
                   <Text style={styles.cardHeaderTitle}>⚠️ Duplicate Entry Detected</Text>
@@ -363,30 +455,53 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
                 </View>
               )}
             </View>
+
+            {/* Alive User Avatar Beside Sent Message */}
+            {item.sender === 'user' && (
+              <View style={styles.userMsgAvatarWrapper}>
+                <Image
+                  source={{
+                    uri: userAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100',
+                  }}
+                  style={styles.userMsgAvatar}
+                />
+              </View>
+            )}
           </View>
         )}
       />
 
       {loading && (
         <View style={styles.loadingBar}>
-          <ActivityIndicator size="small" color={md3Colors.primary} />
-          <Text style={styles.loadingMsg}>Material 3 AI Assistant is working...</Text>
+          <ActivityIndicator size="small" color="#818CF8" />
+          <Text style={styles.loadingMsg}>Grok AI is processing your request...</Text>
         </View>
       )}
 
-      {/* Undo Toast */}
-      {showUndoToast && lastLoggedEntry && (
-        <View style={styles.undoToast}>
-          <Text style={styles.undoText}>
-            Logged <Text style={{ fontWeight: 'bold', color: '#FFF' }}>{lastLoggedEntry.category}</Text>
+      {/* Material 3 Snackbar Undo Toast */}
+      <Portal>
+        <Snackbar
+          visible={showUndoToast}
+          onDismiss={() => setShowUndoToast(false)}
+          duration={7000}
+          action={{
+            label: 'UNDO',
+            onPress: handleUndo,
+            textColor: '#818CF8',
+          }}
+          style={{
+            backgroundColor: theme.colors.surfaceContainerHighest,
+            borderRadius: theme.roundness.md,
+            marginBottom: 80,
+          }}
+        >
+          <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+            Logged {lastLoggedEntry?.category || 'entry'}
           </Text>
-          <TouchableOpacity style={styles.undoBtn} onPress={handleUndo}>
-            <Text style={styles.undoBtnText}>↩ Undo Log</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+        </Snackbar>
+      </Portal>
 
-      {/* Collapsible M3 Category Drawer */}
+      {/* Collapsible Category Drawer */}
       {showCategoryDrawer && (
         <View style={styles.drawerContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12 }}>
@@ -433,383 +548,768 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
       {selectedImage && (
         <View style={styles.imagePreviewRow}>
           <Image source={{ uri: selectedImage }} style={styles.previewThumb} />
-          <Text style={{ color: md3Colors.onSurfaceVariant, fontSize: 12, marginLeft: 8 }}>Photo attached</Text>
+          <Text style={{ color: '#A1A1AA', fontSize: 12, marginLeft: 8 }}>Photo attached</Text>
           <TouchableOpacity style={styles.closePreview} onPress={() => setSelectedImage(null)}>
-            <Text style={{ color: '#fff', fontSize: 11 }}>✕</Text>
+            <Text style={{ color: '#FFF', fontSize: 11 }}>✕</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Bottom Floating M3 Prompt Capsule */}
-      <View style={styles.inputDock}>
-        <View style={styles.inputCapsule}>
-          <TouchableOpacity
-            style={[styles.actionToggleBtn, showCategoryDrawer && styles.actionToggleBtnActive]}
-            onPress={() => setShowCategoryDrawer(!showCategoryDrawer)}
-          >
-            <Text style={styles.actionToggleIcon}>{showCategoryDrawer ? '✕' : '+'}</Text>
-          </TouchableOpacity>
+      {/* Grok Quick Action Horizontal Carousel (Pills above Input Capsule - shown only on chat start) */}
+      {messages.length === 0 && (
+        <View style={styles.grokPillsContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.grokPillsScroll}>
+            <TouchableOpacity
+              style={styles.grokActionPill}
+              onPress={() => {
+                setChatMode('lifegpt');
+                handleSend('Give me a high-level summary of my daily habits and productivity!');
+              }}
+            >
+              <MaterialCommunityIcons name="compass-outline" size={16} color={theme.colors.primary} />
+              <Text style={styles.grokActionPillText}>Try SuperGrok</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.mediaBtn} onPress={pickImageFromCamera}>
-            <Text style={{ fontSize: 18 }}>📷</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.grokActionPill}
+              onPress={() => {
+                setChatMode('chef');
+                handleSend('What quick healthy recipe can I make in 15 minutes?');
+              }}
+            >
+              <MaterialCommunityIcons name="chef-hat" size={16} color={theme.colors.primary} />
+              <Text style={styles.grokActionPillText}>Chef AI Mode</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity style={styles.mediaBtn} onPress={pickImageFromGallery}>
-            <Text style={{ fontSize: 18 }}>🖼️</Text>
-          </TouchableOpacity>
+            <TouchableOpacity style={styles.grokActionPill} onPress={pickImageFromCamera}>
+              <MaterialCommunityIcons name="camera-outline" size={16} color={theme.colors.primary} />
+              <Text style={styles.grokActionPillText}>Scan Meal Photo</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      )}
 
+      {/* Material 3 Single-Surface Gemini/ChatGPT Style Executive Message Composer Dock */}
+      <View style={[styles.composerContainer, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <Surface style={styles.composerSurface} elevation={2}>
+          {/* Left Controls: Plus Category Drawer + Camera */}
+          <View style={styles.leftControlsRow}>
+            <TouchableOpacity
+              style={styles.composerIconBtn}
+              onPress={() => {
+                if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                setShowCategoryDrawer(!showCategoryDrawer);
+              }}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons
+                name={showCategoryDrawer ? "close" : "plus"}
+                size={22}
+                color={showCategoryDrawer ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.composerIconBtn}
+              onPress={() => {
+                if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                pickImageFromCamera();
+              }}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="camera-outline" size={22} color={theme.colors.onSurfaceVariant} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Center Flexible Multiline TextInput */}
           <TextInput
-            style={styles.textInput}
+            style={styles.composerInput}
             placeholder={
               chatMode === 'chef'
-                ? "Ask Chef: what to cook..."
+                ? 'Ask Chef AI for recipes...'
                 : chatMode === 'lifegpt'
-                ? "Ask Coach: How was my week?..."
-                : "Ask AI or log meal, expense, workout..."
+                ? 'Ask SuperGrok for analysis...'
+                : 'Message Buddy...'
             }
-            placeholderTextColor={md3Colors.outline}
+            placeholderTextColor={theme.colors.onSurfaceVariant}
             value={inputText}
             onChangeText={setInputText}
             multiline
-            maxHeight={120}
+            maxHeight={110}
           />
 
-          <TouchableOpacity
-            style={styles.micBtn}
-            onPress={() => setShowVoiceModal(true)}
-          >
-            <Text style={{ fontSize: 16 }}>🎙️</Text>
-          </TouchableOpacity>
+          {/* Right Controls: Mic Dictation + Send Button */}
+          <View style={styles.rightControlsRow}>
+            {!inputText.trim() && !selectedImage && (
+              <TouchableOpacity
+                style={styles.composerIconBtn}
+                onPress={() => {
+                  if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+                  setShowVoiceModal(true);
+                }}
+                activeOpacity={0.7}
+              >
+                <MaterialCommunityIcons name="microphone-outline" size={22} color={theme.colors.onSurfaceVariant} />
+              </TouchableOpacity>
+            )}
 
-          <TouchableOpacity
-            style={[styles.sendBtn, (!inputText.trim() && !selectedImage) && styles.sendBtnDisabled]}
-            onPress={() => handleSend()}
-            disabled={(!inputText.trim() && !selectedImage) || loading}
-          >
-            <Text style={styles.sendBtnIcon}>↑</Text>
-          </TouchableOpacity>
-        </View>
+            <TouchableOpacity
+              style={[
+                styles.sendBtnCircle,
+                (inputText.trim() || selectedImage) && styles.sendBtnCircleActive,
+              ]}
+              onPress={() => handleSend()}
+              disabled={loading || (!inputText.trim() && !selectedImage)}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons
+                name="arrow-up"
+                size={20}
+                color={(inputText.trim() || selectedImage) ? theme.colors.onPrimary : theme.colors.onSurfaceVariant}
+              />
+            </TouchableOpacity>
+          </View>
+        </Surface>
       </View>
 
-      {/* Voice Speech Dictation Modal */}
-      <VoiceDictationModal
-        visible={showVoiceModal}
-        onClose={() => setShowVoiceModal(false)}
-        onVoiceTranscribed={(text) => setInputText(text)}
-      />
+      {/* Model Engine Selector Modal */}
+      <Portal>
+        <PaperModal visible={showModelPicker} onDismiss={() => setShowModelPicker(false)}>
+          <View style={styles.modelModalBox}>
+            <Text style={styles.modelModalTitle}>🤖 Select Grok AI Engine</Text>
+            {QUICK_MODELS[provider]?.map((m) => (
+              <TouchableOpacity
+                key={m.id}
+                style={[styles.modelOptionRow, model === m.id && styles.modelOptionSelected]}
+                onPress={() => handleSelectModel(provider, m.id)}
+              >
+                <Text style={[styles.modelOptionText, model === m.id && styles.modelOptionTextActive]}>
+                  {m.label}
+                </Text>
+                {m.free && <Text style={styles.freeBadge}>FREE</Text>}
+              </TouchableOpacity>
+            ))}
+            <PaperButton onPress={() => setShowModelPicker(false)} style={{ marginTop: 12 }}>
+              Close
+            </PaperButton>
+          </View>
+        </PaperModal>
 
-      {/* Model Selection Modal */}
-      <Modal visible={showModelPicker} transparent animationType="fade" onRequestClose={() => setShowModelPicker(false)}>
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowModelPicker(false)}>
-          <View style={styles.modalSheet} onStartShouldSetResponder={() => true}>
-            <Text style={styles.modalTitle}>✨ Select AI Model Engine</Text>
+        {/* MD3 Quick Log Value Input Modal */}
+        <PaperModal
+          visible={quickLogModalConfig.visible}
+          onDismiss={() => setQuickLogModalConfig((prev) => ({ ...prev, visible: false }))}
+        >
+          <View style={styles.quickModalBox}>
+            {/* Modal Header */}
+            <View style={styles.quickModalHeader}>
+              <MaterialCommunityIcons name={quickLogModalConfig.icon as any} size={28} color={theme.colors.primary} />
+              <Text style={styles.quickModalTitle}>{quickLogModalConfig.title}</Text>
+            </View>
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-              {(['gemini', 'groq', 'openrouter', 'openai', 'anthropic'] as Provider[]).map((p) => (
+            {/* Quantity Input */}
+            <Text style={styles.quickInputLabel}>Quantity ({quickLogModalConfig.unit}):</Text>
+            <TextInput
+              style={styles.quickNumberInput}
+              keyboardType="numeric"
+              value={quickLogInputValue}
+              onChangeText={setQuickLogInputValue}
+              placeholder={`Enter ${quickLogModalConfig.unit}...`}
+              placeholderTextColor={theme.colors.onSurfaceVariant}
+              autoFocus
+            />
+
+            {/* Quick Preset Buttons */}
+            <View style={styles.quickPresetRow}>
+              {quickLogModalConfig.presets.map((val) => (
                 <TouchableOpacity
-                  key={p}
-                  style={[styles.providerChip, provider === p && styles.providerChipActive]}
-                  onPress={() => setProvider(p)}
+                  key={val}
+                  style={[
+                    styles.quickPresetBtn,
+                    quickLogInputValue === val && styles.quickPresetBtnActive,
+                  ]}
+                  onPress={() => setQuickLogInputValue(val)}
                 >
-                  <Text style={[styles.providerChipText, provider === p && styles.providerChipTextActive]}>
-                    {PROVIDER_DISPLAY[p]}
+                  <Text style={[styles.quickPresetText, quickLogInputValue === val && styles.quickPresetTextActive]}>
+                    +{val} {quickLogModalConfig.unit}
                   </Text>
                 </TouchableOpacity>
               ))}
-            </ScrollView>
+            </View>
 
-            <ScrollView style={{ maxHeight: 300 }}>
-              {(QUICK_MODELS[provider] || []).map((m) => (
-                <TouchableOpacity
-                  key={m.id}
-                  style={[styles.modelItem, model === m.id && styles.modelItemActive]}
-                  onPress={() => handleQuickModelSwitch(provider, m.id)}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.modelItemText, model === m.id && styles.modelItemTextActive]}>{m.label}</Text>
-                    <Text style={styles.modelIdSub}>{m.id}</Text>
-                  </View>
-                  {m.free && <View style={styles.freeBadge}><Text style={styles.freeBadgeText}>FREE</Text></View>}
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+            {/* Action Buttons */}
+            <View style={styles.quickModalActions}>
+              <PaperButton
+                mode="outlined"
+                onPress={() => setQuickLogModalConfig((prev) => ({ ...prev, visible: false }))}
+                style={{ flex: 1 }}
+              >
+                Cancel
+              </PaperButton>
 
-            <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setShowModelPicker(false)}>
-              <Text style={styles.modalCloseText}>Done</Text>
-            </TouchableOpacity>
+              <PaperButton
+                mode="contained"
+                buttonColor={theme.colors.primary}
+                textColor={theme.colors.onPrimary}
+                onPress={handleConfirmQuickLog}
+                style={{ flex: 1 }}
+              >
+                Save & Log
+              </PaperButton>
+            </View>
           </View>
-        </TouchableOpacity>
-      </Modal>
+        </PaperModal>
+      </Portal>
+
+      {/* Voice Dictation Modal */}
+      <VoiceDictationModal
+        visible={showVoiceModal}
+        onClose={() => setShowVoiceModal(false)}
+        onVoiceTranscribed={(text) => {
+          setInputText((prev) => (prev ? `${prev} ${text}` : text));
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  grokContainer: {
     flex: 1,
-    backgroundColor: md3Colors.background,
+    backgroundColor: theme.colors.background,
   },
-  topControlBar: {
+  grokHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: md3Colors.surfaceContainer,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: theme.colors.surface,
     borderBottomWidth: 1,
-    borderBottomColor: md3Colors.outlineVariant,
+    borderBottomColor: theme.colors.outlineVariant,
   },
-  modeTabs: {
+  iconBtn: {
+    padding: theme.spacing.xs,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  grokTabSwitcher: {
     flexDirection: 'row',
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    borderRadius: 20,
-    padding: 3,
+    alignItems: 'center',
+    gap: theme.spacing.xl,
   },
-  modeTab: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
+  grokTab: {
+    paddingVertical: theme.spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  modeTabActive: { backgroundColor: md3Colors.primaryContainer },
-  modeTabChefActive: { backgroundColor: md3Colors.catMeal },
-  modeTabLifeActive: { backgroundColor: md3Colors.catMood },
-  modeTabText: { color: md3Colors.onSurfaceVariant, fontSize: 11, fontWeight: '600' },
-  modeTabTextActive: { color: md3Colors.onPrimaryContainer, fontWeight: 'bold' },
-  modeTabTextChefActive: { color: '#000000', fontWeight: 'bold' },
-  modeTabTextLifeActive: { color: '#000000', fontWeight: 'bold' },
-  modelPickerBtn: {
-    backgroundColor: md3Colors.secondaryContainer,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+  grokTabActive: {},
+  grokTabText: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 16,
+    fontWeight: '600',
   },
-  modelPickerBtnText: { color: md3Colors.onSecondaryContainer, fontSize: 11, fontWeight: '700' },
+  grokTabTextActive: {
+    color: theme.colors.onSurface,
+    fontWeight: 'bold',
+  },
+  grokTabIndicator: {
+    width: 20,
+    height: 3,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 2,
+    marginTop: 4,
+  },
   messagesContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 16,
+    padding: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+  },
+  proactiveHeroContainer: {
+    paddingVertical: theme.spacing.md,
+  },
+  proactiveHeader: {
+    marginBottom: theme.spacing.lg,
+  },
+  proactiveGreetingTitle: {
+    ...theme.typography.headline,
+    color: theme.colors.onBackground,
+    fontWeight: 'bold',
+  },
+  proactiveGreetingSub: {
+    ...theme.typography.label,
+    color: theme.colors.onSurfaceVariant,
+    marginTop: 2,
+  },
+  proactiveCardsList: {
+    gap: theme.spacing.sm,
+  },
+  proactiveCard: {
+    backgroundColor: theme.colors.surfaceContainer,
+    borderRadius: theme.roundness.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+  },
+  proactiveCardInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
+  },
+  proactiveIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  proactiveCardTitle: {
+    color: theme.colors.onSurface,
+    fontSize: 15,
+    fontWeight: 'bold',
+  },
+  proactiveCardSub: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 13,
+    marginTop: 2,
   },
   msgRow: {
-    marginVertical: 6,
+    marginVertical: theme.spacing.xs,
     flexDirection: 'row',
   },
-  msgRowUser: { justifyContent: 'flex-end' },
-  msgRowAi: { justifyContent: 'flex-start' },
+  msgRowUser: {
+    justifyContent: 'flex-end',
+  },
+  msgRowAi: {
+    justifyContent: 'flex-start',
+  },
   msgBubble: {
-    maxWidth: '88%',
-    padding: 14,
-    borderRadius: 18,
+    maxWidth: '85%',
+    borderRadius: theme.roundness.lg,
+    padding: theme.spacing.md,
   },
   bubbleUser: {
-    backgroundColor: md3Colors.primaryContainer,
-    borderBottomRightRadius: 4,
+    backgroundColor: theme.colors.surfaceContainerHigh,
+    borderBottomRightRadius: theme.roundness.xs,
   },
   bubbleAi: {
-    backgroundColor: md3Colors.surfaceContainerHigh,
-    borderBottomLeftRadius: 4,
+    backgroundColor: theme.colors.surfaceContainer,
     borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+    borderColor: theme.colors.outlineVariant,
+    borderBottomLeftRadius: theme.roundness.xs,
   },
-  userText: { color: md3Colors.onPrimaryContainer, fontSize: 14, lineHeight: 21 },
-  aiText: { color: md3Colors.onSurface, fontSize: 14, lineHeight: 21 },
+  userText: {
+    color: theme.colors.onSurface,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  aiText: {
+    color: theme.colors.onSurface,
+    fontSize: 15,
+    lineHeight: 22,
+  },
   msgTime: {
     fontSize: 10,
-    color: md3Colors.outline,
-    marginTop: 6,
+    color: theme.colors.outline,
     alignSelf: 'flex-end',
+    marginTop: 4,
   },
   msgImage: {
-    width: 220,
+    width: 200,
     height: 140,
-    borderRadius: 12,
-    marginBottom: 8,
+    borderRadius: theme.roundness.md,
+    marginBottom: theme.spacing.xs,
   },
   loadingBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    gap: 8,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
   },
-  loadingMsg: { color: md3Colors.onSurfaceVariant, fontSize: 12 },
+  loadingMsg: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 13,
+  },
   undoToast: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 24,
-    marginHorizontal: 16,
-    marginBottom: 8,
+    backgroundColor: '#1E1B4B',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    marginHorizontal: theme.spacing.lg,
+    borderRadius: theme.roundness.md,
     borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+    borderColor: '#4338CA',
+    marginBottom: theme.spacing.xs,
   },
-  undoText: { color: md3Colors.onSurfaceVariant, fontSize: 13 },
+  undoText: {
+    color: '#C7D2FE',
+    fontSize: 13,
+  },
   undoBtn: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: md3Colors.error,
+    backgroundColor: '#4F46E5',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.roundness.xs,
   },
-  undoBtnText: { color: md3Colors.error, fontSize: 12, fontWeight: 'bold' },
+  undoBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
   drawerContainer: {
-    backgroundColor: md3Colors.surfaceContainer,
-    paddingVertical: 10,
+    backgroundColor: theme.colors.surfaceContainer,
+    paddingVertical: theme.spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: md3Colors.outlineVariant,
+    borderTopColor: theme.colors.outlineVariant,
   },
   presetChip: {
-    backgroundColor: md3Colors.secondaryContainer,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 14,
-    marginRight: 6,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.roundness.full,
+    marginRight: theme.spacing.xs,
   },
-  presetChipText: { color: md3Colors.onSecondaryContainer, fontSize: 11, fontWeight: '600' },
+  presetChipText: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 12,
+  },
   imagePreviewRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: md3Colors.surfaceContainer,
+    backgroundColor: theme.colors.surfaceContainer,
+    padding: theme.spacing.xs,
+    marginHorizontal: theme.spacing.lg,
+    borderRadius: theme.roundness.md,
+    marginBottom: theme.spacing.xs,
   },
-  previewThumb: { width: 36, height: 36, borderRadius: 6 },
-  closePreview: { marginLeft: 'auto', backgroundColor: 'rgba(255,255,255,0.2)', width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  inputDock: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: md3Colors.background,
+  previewThumb: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.roundness.xs,
   },
-  inputCapsule: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    borderRadius: 24,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  actionToggleBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: md3Colors.surfaceContainer,
+  closePreview: {
+    marginLeft: 'auto',
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 4,
   },
-  actionToggleBtnActive: {
-    backgroundColor: md3Colors.primaryContainer,
+  grokPillsContainer: {
+    paddingVertical: theme.spacing.xs,
   },
-  actionToggleIcon: {
-    color: md3Colors.onSurface,
+  grokPillsScroll: {
+    paddingHorizontal: theme.spacing.lg,
+    gap: theme.spacing.sm,
+  },
+  grokActionPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surfaceContainer,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+    paddingHorizontal: theme.spacing.md,
+    height: 36,
+    borderRadius: theme.roundness.full,
+    gap: theme.spacing.xs,
+  },
+  grokActionPillText: {
+    color: theme.colors.onSurface,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  // Material 3 Executive Message Composer Dock Styles
+  composerContainer: {
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.xs,
+    backgroundColor: theme.colors.background,
+  },
+  composerSurface: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    backgroundColor: theme.colors.surfaceContainer,
+    borderRadius: theme.roundness.full,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 4,
+    minHeight: 52,
+  },
+  leftControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingBottom: 4,
+  },
+  rightControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingBottom: 4,
+  },
+  composerIconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  composerInput: {
+    flex: 1,
+    color: theme.colors.onSurface,
+    fontSize: 15,
+    lineHeight: 20,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    maxHeight: 110,
+    textAlignVertical: 'center',
+  },
+  sendBtnCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendBtnCircleActive: {
+    backgroundColor: theme.colors.primary,
+  },
+  grokPlusText: {
+    color: '#E4E4E7',
     fontSize: 18,
     fontWeight: 'bold',
-    lineHeight: 20,
   },
-  mediaBtn: { padding: 6 },
-  textInput: {
-    flex: 1,
-    color: md3Colors.onSurface,
-    fontSize: 14,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-  },
-  micBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 4,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  sendBtn: {
-    backgroundColor: md3Colors.primary,
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 4,
-  },
-  sendBtnDisabled: { opacity: 0.3 },
-  sendBtnIcon: { color: md3Colors.onPrimary, fontWeight: 'bold', fontSize: 16 },
-  interactiveCard: {
-    marginTop: 10,
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-    borderRadius: 12,
-    padding: 12,
-  },
-  cardHeaderTitle: { color: md3Colors.catReminder, fontWeight: 'bold', fontSize: 12, marginBottom: 4 },
-  cardMsg: { color: md3Colors.onSurfaceVariant, fontSize: 12, marginBottom: 8 },
-  cardOptions: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  cardOptBtn: {
-    backgroundColor: md3Colors.surfaceContainer,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  cardOptPrimary: { backgroundColor: md3Colors.primary },
-  cardOptDanger: { backgroundColor: md3Colors.error },
-  cardOptText: { color: '#FFF', fontSize: 11, fontWeight: '600' },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: md3Colors.surfaceContainer,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    borderTopWidth: 1,
-    borderTopColor: md3Colors.outlineVariant,
-  },
-  modalTitle: { color: md3Colors.onSurface, fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
-  providerChip: {
-    backgroundColor: md3Colors.surfaceContainerHigh,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    marginRight: 8,
-  },
-  providerChipActive: { backgroundColor: md3Colors.primary },
-  providerChipText: { color: md3Colors.onSurfaceVariant, fontSize: 12, fontWeight: '600' },
-  providerChipTextActive: { color: md3Colors.onPrimary, fontWeight: 'bold' },
-  modelItem: {
+  grokEnginePill: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#242430',
+    borderWidth: 1,
+    borderColor: '#323242',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+    gap: 4,
+  },
+  grokEnginePillIcon: {
+    fontSize: 12,
+  },
+  grokEnginePillText: {
+    color: '#E4E4E7',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  grokSpeakBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#272734',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 18,
+    gap: 4,
+  },
+  grokSpeakBtnActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  grokSpeakText: {
+    color: '#A1A1AA',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  grokSpeakTextActive: {
+    color: '#000000',
+  },
+  interactiveCard: {
+    marginTop: 10,
+    backgroundColor: '#1E1B4B',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#4338CA',
+  },
+  cardHeaderTitle: {
+    color: '#F87171',
+    fontWeight: 'bold',
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  cardMsg: {
+    color: '#E0E7FF',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  cardOptions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  cardOptBtn: {
+    backgroundColor: '#3730A3',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  cardOptPrimary: {
+    backgroundColor: '#4F46E5',
+  },
+  cardOptDanger: {
+    backgroundColor: '#DC2626',
+  },
+  cardOptText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  modelModalBox: {
+    backgroundColor: '#18181B',
+    marginHorizontal: 24,
+    padding: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#27272A',
+  },
+  modelModalTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginBottom: 16,
+  },
+  modelOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingVertical: 12,
     paddingHorizontal: 12,
     borderRadius: 10,
+    marginBottom: 6,
+    backgroundColor: '#27272A',
+  },
+  modelOptionSelected: {
+    backgroundColor: '#3730A3',
+  },
+  modelOptionText: {
+    color: '#E4E4E7',
+    fontSize: 14,
+  },
+  modelOptionTextActive: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  freeBadge: {
+    backgroundColor: '#10B981',
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: 'bold',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  quickGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.xs,
+  },
+  quickTile: {
+    width: '48%',
+    backgroundColor: theme.colors.surfaceContainer,
+    borderRadius: theme.roundness.md,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+  },
+  quickTileInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.md,
+    height: 40,
+    gap: theme.spacing.xs,
+  },
+  quickTileTitle: {
+    color: theme.colors.onSurface,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  // MD3 Quick Log Value Modal Styles
+  quickModalBox: {
+    backgroundColor: theme.colors.surfaceContainer,
+    marginHorizontal: theme.spacing.lg,
+    padding: theme.spacing.lg,
+    borderRadius: theme.roundness.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+  },
+  quickModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+  },
+  quickModalTitle: {
+    color: theme.colors.onSurface,
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  quickInputLabel: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: theme.spacing.xs,
+  },
+  quickNumberInput: {
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    color: theme.colors.onSurface,
+    fontSize: 20,
+    fontWeight: 'bold',
+    borderRadius: theme.roundness.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+    marginBottom: theme.spacing.md,
+    textAlign: 'center',
+  },
+  quickPresetRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.lg,
+  },
+  quickPresetBtn: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceContainerHighest,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.roundness.md,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.outlineVariant,
+  },
+  quickPresetBtnActive: {
+    backgroundColor: theme.colors.primaryContainer,
+    borderColor: theme.colors.primary,
+  },
+  quickPresetText: {
+    color: theme.colors.onSurfaceVariant,
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  quickPresetTextActive: {
+    color: theme.colors.onPrimaryContainer,
+  },
+  quickModalActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  userMsgAvatarWrapper: {
+    marginLeft: theme.spacing.xs,
+    alignSelf: 'flex-end',
     marginBottom: 4,
   },
-  modelItemActive: { backgroundColor: md3Colors.surfaceContainerHighest },
-  modelItemText: { color: md3Colors.onSurface, fontSize: 14, fontWeight: '600' },
-  modelItemTextActive: { color: md3Colors.primary, fontWeight: 'bold' },
-  modelIdSub: { color: md3Colors.outline, fontSize: 11, marginTop: 2 },
-  freeBadge: { backgroundColor: 'rgba(16, 185, 129, 0.2)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  freeBadgeText: { color: md3Colors.catExpense, fontSize: 10, fontWeight: 'bold' },
-  modalCloseBtn: {
-    backgroundColor: md3Colors.primary,
-    paddingVertical: 12,
-    borderRadius: 16,
-    alignItems: 'center',
-    marginTop: 16,
+  userMsgAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: theme.colors.primary,
   },
-  modalCloseText: { color: md3Colors.onPrimary, fontWeight: 'bold', fontSize: 14 },
 });

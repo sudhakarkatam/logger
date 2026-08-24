@@ -33,7 +33,7 @@ export function getExpiryLabel(expiryDateStr?: string): string {
 }
 
 export function calculateStreak(entries: any[], category: string, filterFn?: (e: any) => boolean): number {
-  if (!entries || entries.length === 0) return 0;
+  if (!entries || !Array.isArray(entries) || entries.length === 0) return 0;
   
   const dates = entries
     .filter(e => e.category === category && (!filterFn || filterFn(e)))

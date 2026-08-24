@@ -15,6 +15,7 @@ import {
   getShakeTargetCount,
   subscribeAccelerometerShakes,
   subscribePedometerSteps,
+  snoozeAlarm,
 } from '../services/alarms';
 
 interface ShakeMissionModalProps {
@@ -37,6 +38,33 @@ export default function ShakeMissionModal({
     missionType === 'shake'
       ? getShakeTargetCount(shakeDifficulty)
       : alarm?.targetWalkSteps || 20;
+
+  // Keep Screen ON during active alarm mission
+  useEffect(() => {
+    let keepAwakeModule: any;
+    if (visible) {
+      try {
+        keepAwakeModule = require('expo-keep-awake');
+        keepAwakeModule?.activateKeepAwakeAsync?.('alarm_mission');
+      } catch (_) {}
+    }
+
+    return () => {
+      try {
+        keepAwakeModule?.deactivateKeepAwake?.('alarm_mission');
+      } catch (_) {}
+    };
+  }, [visible]);
+
+  async function handleSnooze() {
+    if (alarm) {
+      await snoozeAlarm(alarm.id, 5);
+    }
+    try {
+      Vibration.cancel();
+    } catch (_) {}
+    onDismissMission();
+  }
 
   useEffect(() => {
     if (!visible || !alarm) {
@@ -203,10 +231,34 @@ export default function ShakeMissionModal({
               </Text>
             </View>
 
-            {/* Manual Emergency Bypass Button */}
-            <TouchableOpacity style={styles.emergencyBtn} onPress={onDismissMission}>
-              <Text style={styles.emergencyBtnText}>Emergency Dismiss</Text>
-            </TouchableOpacity>
+            {/* Snooze & Emergency Buttons */}
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  backgroundColor: '#3730A3',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  alignItems: 'center',
+                }}
+                onPress={handleSnooze}
+              >
+                <Text style={{ color: '#FFFFFF', fontWeight: 'bold', fontSize: 13 }}>💤 Snooze (+5m)</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  backgroundColor: '#27272A',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  alignItems: 'center',
+                }}
+                onPress={onDismissMission}
+              >
+                <Text style={{ color: '#A1A1AA', fontWeight: '600', fontSize: 13 }}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : (
           /* Completion Celebratory Screen */

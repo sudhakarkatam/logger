@@ -28,6 +28,8 @@ import M3Card from './ui/m3/M3Card';
 import M3Button from './ui/m3/M3Button';
 import VoiceDictationModal from './VoiceDictationModal';
 
+import { Portal, Dialog, Button as PaperButton, Snackbar } from 'react-native-paper';
+
 interface NotificationHubTabProps {
   onOpenAlarmHub?: () => void;
 }
@@ -39,6 +41,7 @@ export default function NotificationHubTab({ onOpenAlarmHub }: NotificationHubTa
   const [refreshing, setRefreshing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [showVoiceModal, setShowVoiceModal] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   useEffect(() => {
     loadReminders();
@@ -78,33 +81,25 @@ export default function NotificationHubTab({ onOpenAlarmHub }: NotificationHubTa
 
     setInputText('');
     loadReminders();
-    setTimeout(() => setStatusMessage(''), 4000);
   }
 
   async function handleTogglePreset(presetType: string) {
     await schedulePresetReminder(presetType);
     setStatusMessage(`✅ Preset reminder enabled!`);
     loadReminders();
-    setTimeout(() => setStatusMessage(''), 3000);
   }
 
   async function handleDeleteReminder(id: string) {
     await cancelScheduledReminder(id);
     setScheduledList((prev) => prev.filter((item) => item.id !== id));
+    setStatusMessage('✅ Reminder cancelled');
   }
 
-  async function handleClearAll() {
-    Alert.alert('Clear All Reminders', 'Are you sure you want to cancel all scheduled notifications?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear All',
-        style: 'destructive',
-        onPress: async () => {
-          await cancelAllReminders();
-          setScheduledList([]);
-        },
-      },
-    ]);
+  async function confirmClearAll() {
+    await cancelAllReminders();
+    setScheduledList([]);
+    setShowClearConfirm(false);
+    setStatusMessage('✅ All reminders cleared');
   }
 
   return (
@@ -178,31 +173,11 @@ export default function NotificationHubTab({ onOpenAlarmHub }: NotificationHubTa
         </M3Card>
       )}
 
-      {/* 1-Tap Daily Presets */}
-      <M3Card variant="outlined" style={styles.card}>
-        <Text style={styles.cardTitle}>⚡ 1-Tap Daily Presets</Text>
-        <Text style={styles.cardSub}>Enable daily scheduled OS reminders with one tap</Text>
-        <View style={styles.presetGrid}>
-          {PRESET_REMINDERS.map((item) => (
-            <TouchableOpacity
-              key={item.type}
-              style={styles.presetChip}
-              onPress={() => handleTogglePreset(item.type)}
-            >
-              <Text style={styles.presetTitle}>{item.label}</Text>
-              <Text style={styles.presetTime}>
-                {item.hour.toString().padStart(2, '0')}:{item.minute.toString().padStart(2, '0')}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </M3Card>
-
       {/* Active Scheduled Reminders */}
       <View style={styles.listHeaderRow}>
         <Text style={styles.cardTitle}>📅 Active Scheduled Local Alarms ({scheduledList.length})</Text>
         {scheduledList.length > 0 && (
-          <TouchableOpacity onPress={handleClearAll}>
+          <TouchableOpacity onPress={() => setShowClearConfirm(true)}>
             <Text style={styles.clearText}>Clear All</Text>
           </TouchableOpacity>
         )}
@@ -236,6 +211,31 @@ export default function NotificationHubTab({ onOpenAlarmHub }: NotificationHubTa
           </M3Card>
         ))
       )}
+
+      {/* MD3 Clear All Confirmation Dialog */}
+      <Portal>
+        <Dialog visible={showClearConfirm} onDismiss={() => setShowClearConfirm(false)}>
+          <Dialog.Title>Clear All Scheduled Alarms?</Dialog.Title>
+          <Dialog.Content>
+            <Text style={{ color: md3Colors.onSurfaceVariant }}>
+              Are you sure you want to cancel all active scheduled local alarms?
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <PaperButton onPress={() => setShowClearConfirm(false)}>Cancel</PaperButton>
+            <PaperButton textColor="#EF4444" onPress={confirmClearAll}>Clear All</PaperButton>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* MD3 Snackbar Feedback Toast */}
+      <Snackbar
+        visible={!!statusMessage}
+        onDismiss={() => setStatusMessage('')}
+        duration={3500}
+      >
+        {statusMessage}
+      </Snackbar>
 
       {/* Voice Speech Dictation Modal */}
       <VoiceDictationModal
@@ -354,12 +354,14 @@ const styles = StyleSheet.create({
   presetGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    justifyContent: 'space-between',
     gap: 8,
   },
   presetChip: {
+    width: '48%',
     backgroundColor: md3Colors.surfaceContainerHighest,
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: md3Colors.outlineVariant,

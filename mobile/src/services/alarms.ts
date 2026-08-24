@@ -1,5 +1,7 @@
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import * as IntentLauncher from 'expo-intent-launcher';
 import { sendInstantLocalNotification } from './notifications';
 
 export type MissionType = 'standard' | 'shake' | 'walk';
@@ -17,6 +19,7 @@ export interface AlarmItem {
   shakeDifficulty: ShakeDifficulty; // easy = 15, medium = 30, hard = 50
   targetWalkSteps: number; // e.g. 20
   soundName?: string;
+  customSoundUri?: string;
 }
 
 const ALARMS_STORAGE_KEY = '@buddy_alarms_list_v1';
@@ -75,6 +78,22 @@ export async function saveStoredAlarms(alarms: AlarmItem[]): Promise<boolean> {
 
 export async function syncAlarmNotifications(alarms: AlarmItem[]) {
   try {
+    // Create dedicated MAX importance ALARM Audio Channel on Android
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('alarm_full_volume', {
+        name: 'Real Alarm Clock Channel',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 500, 500, 500, 500],
+        sound: 'default',
+        audioAttributes: {
+          usage: Notifications.AndroidAudioUsage.ALARM,
+          contentType: Notifications.AndroidAudioContentType.SONIFICATION,
+        },
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+      }).catch(() => {});
+    }
+
     for (const alarm of alarms) {
       if (alarm.isEnabled) {
         await Notifications.scheduleNotificationAsync({
@@ -88,20 +107,46 @@ export async function syncAlarmNotifications(alarms: AlarmItem[]) {
                 ? '🚶 Walk Mission Required (20 Steps)!'
                 : 'Time to wake up and start your day!',
             sound: true,
+            categoryIdentifier: 'alarm',
             data: { alarmId: alarm.id, missionType: alarm.missionType },
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DAILY,
             hour: alarm.hour,
             minute: alarm.minute,
+            channelId: 'alarm_full_volume',
           },
         });
+
+        // Trigger Android System Clock Alarm sync
+        await setNativeSystemAlarm(alarm.hour, alarm.minute, alarm.label || 'Buddy Alarm').catch(() => {});
       } else {
         await Notifications.cancelScheduledNotificationAsync(`buddy_alarm_${alarm.id}`).catch(() => {});
       }
     }
   } catch (err) {
     console.warn('Error syncing alarm notifications:', err);
+  }
+}
+
+export async function setNativeSystemAlarm(hour: number, minute: number, message: string) {
+  if (Platform.OS === 'android') {
+    try {
+      if (IntentLauncher && IntentLauncher.startActivityAsync) {
+        await IntentLauncher.startActivityAsync('android.intent.action.SET_ALARM', {
+          extra: {
+            'android.intent.extra.alarm.HOUR': hour,
+            'android.intent.extra.alarm.MINUTES': minute,
+            'android.intent.extra.alarm.MESSAGE': message || 'Buddy Alarm',
+            'android.intent.extra.alarm.SKIP_UI': true,
+            'android.intent.extra.alarm.VIBRATE': true,
+          },
+        });
+        console.log(`⏰ Native Android System Alarm scheduled for ${hour}:${minute}`);
+      }
+    } catch (err) {
+      console.warn('Native system alarm sync error:', err);
+    }
   }
 }
 
@@ -157,17 +202,48 @@ export async function subscribeAccelerometerShakes(
   return () => {};
 }
 
-// Subscribe to Pedometer step counter using isAvailableAsync
+// Sound Tone Options
+export const ALARM_SOUND_TONES = [
+  { id: 'default', label: '🔔 System Default Ringtone' },
+  { id: 'radar', label: '🚨 Loud Radar Bell' },
+  { id: 'sunrise', label: '🌅 Gentle Sunrise Chime' },
+  { id: 'cosmic', label: '🌌 Cosmic Alarm' },
+  { id: 'synth', label: '⚡ Energetic Synth Beat' },
+];
+
+// Snooze helper
+export async function snoozeAlarm(alarmId: string, minutes: number = 5): Promise<void> {
+  try {
+    const seconds = minutes * 60;
+    await Notifications.scheduleNotificationAsync({
+      identifier: `buddy_alarm_snooze_${alarmId}_${Date.now()}`,
+      content: {
+        title: '⏰ Snoozed Alarm Ringing!',
+        body: 'Snooze timer complete! Time to wake up and finish your mission!',
+        sound: true,
+        data: { alarmId, isSnooze: true },
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds,
+      },
+    });
+  } catch (err) {
+    console.warn('Error snoozing alarm:', err);
+  }
+}
+
+// Subscribe to Pedometer step counter with Accelerometer Fallback
 export async function subscribePedometerSteps(onStep: (steps: number) => void) {
   try {
     const Sensors = require('expo-sensors');
     if (Sensors && Sensors.Pedometer) {
       const available = await Sensors.Pedometer.isAvailableAsync().catch(() => false);
       if (available) {
-        let startSteps = 0;
+        let startSteps = -1;
         const subscription = Sensors.Pedometer.watchStepCount((result: any) => {
-          if (startSteps === 0) startSteps = result.steps;
-          const count = Math.max(0, result.steps - startSteps);
+          if (startSteps === -1) startSteps = result.steps;
+          const count = Math.max(1, result.steps - startSteps);
           onStep(count);
         });
 
@@ -178,8 +254,33 @@ export async function subscribePedometerSteps(onStep: (steps: number) => void) {
         };
       }
     }
+
+    // Accelerometer Step Counter Fallback (for devices without hardware pedometer)
+    if (Sensors && Sensors.Accelerometer) {
+      const available = await Sensors.Accelerometer.isAvailableAsync().catch(() => false);
+      if (available) {
+        let stepCount = 0;
+        let lastStepTime = 0;
+        Sensors.Accelerometer.setUpdateInterval(100);
+        const subscription = Sensors.Accelerometer.addListener(({ x, y, z }: any) => {
+          const gForce = Math.sqrt(x * x + y * y + z * z);
+          const now = Date.now();
+          if (gForce > 1.18 && now - lastStepTime > 320) {
+            lastStepTime = now;
+            stepCount += 1;
+            onStep(stepCount);
+          }
+        });
+
+        return () => {
+          try {
+            subscription?.remove();
+          } catch (_) {}
+        };
+      }
+    }
   } catch (err) {
-    console.log('ℹ️ Pedometer sensor error:', err);
+    console.log('ℹ️ Step sensor error:', err);
   }
 
   return () => {};

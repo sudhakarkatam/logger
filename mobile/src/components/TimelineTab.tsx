@@ -17,6 +17,8 @@ import CategoryBadge from './ui/CategoryBadge';
 import M3Card from './ui/m3/M3Card';
 import M3Chip from './ui/m3/M3Chip';
 
+import { Portal, Dialog, Button as PaperButton, Snackbar } from 'react-native-paper';
+
 let GLOBAL_TIMELINE_CACHE: Record<string, Entry[]> = {};
 let GLOBAL_LAST_FETCH_TIME: number = 0;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -28,6 +30,10 @@ export default function TimelineTab() {
   const [loading, setLoading] = useState(cachedLogs.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // MD3 Dialog & Snackbar states
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; text: string } | null>(null);
+  const [snackbarText, setSnackbarText] = useState('');
 
   useEffect(() => {
     fetchTimeline(false);
@@ -61,22 +67,26 @@ export default function TimelineTab() {
     }
   }
 
-  async function handleDelete(id: string, text: string) {
-    Alert.alert('Delete Log Entry', `Are you sure you want to delete "${text.substring(0, 30)}..."?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            await deleteEntry(id);
-            setLogs((prev) => prev.filter((item) => item.id !== id));
-          } catch (err: any) {
-            Alert.alert('Error', err.message || 'Could not delete entry.');
-          }
-        },
-      },
-    ]);
+  function handleDeletePress(id: string, text: string) {
+    setDeleteTarget({ id, text });
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    try {
+      await deleteEntry(deleteTarget.id);
+      setLogs((prev) => prev.filter((item) => item.id !== deleteTarget.id));
+      if (GLOBAL_TIMELINE_CACHE[selectedCategory]) {
+        GLOBAL_TIMELINE_CACHE[selectedCategory] = GLOBAL_TIMELINE_CACHE[selectedCategory].filter(
+          (item) => item.id !== deleteTarget.id
+        );
+      }
+      setSnackbarText('✅ Entry deleted successfully');
+    } catch (err: any) {
+      setSnackbarText(err.message || 'Could not delete entry.');
+    } finally {
+      setDeleteTarget(null);
+    }
   }
 
   const filteredLogs = logs.filter((l) =>
@@ -143,7 +153,7 @@ export default function TimelineTab() {
                     })}
                   </Text>
 
-                  <TouchableOpacity onPress={() => handleDelete(item.id, item.raw_text)}>
+                  <TouchableOpacity onPress={() => handleDeletePress(item.id, item.raw_text)}>
                     <Text style={{ fontSize: 14 }}>🗑️</Text>
                   </TouchableOpacity>
                 </View>
@@ -162,6 +172,31 @@ export default function TimelineTab() {
           )}
         />
       )}
+
+      {/* MD3 Delete Confirmation Dialog */}
+      <Portal>
+        <Dialog visible={!!deleteTarget} onDismiss={() => setDeleteTarget(null)}>
+          <Dialog.Title>Delete Log Entry?</Dialog.Title>
+          <Dialog.Content>
+            <Text style={{ color: md3Colors.onSurfaceVariant }}>
+              Are you sure you want to delete "{deleteTarget?.text.substring(0, 40)}..."?
+            </Text>
+          </Dialog.Content>
+          <Dialog.Actions>
+            <PaperButton onPress={() => setDeleteTarget(null)}>Cancel</PaperButton>
+            <PaperButton textColor="#EF4444" onPress={confirmDelete}>Delete</PaperButton>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+
+      {/* MD3 Snackbar Feedback Toast */}
+      <Snackbar
+        visible={!!snackbarText}
+        onDismiss={() => setSnackbarText('')}
+        duration={3000}
+      >
+        {snackbarText}
+      </Snackbar>
     </View>
   );
 }

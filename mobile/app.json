@@ -29,8 +29,8 @@
       ]
     },
     "plugins": [
-      "@react-native-voice/voice",
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      "@react-native-community/datetimepicker"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

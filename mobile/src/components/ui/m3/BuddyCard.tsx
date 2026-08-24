@@ -1,26 +1,28 @@
 import React from 'react';
 import { ViewStyle } from 'react-native';
 import { Card as PaperCard } from 'react-native-paper';
-import { md3Colors } from '../../../theme';
+import { theme } from '../../../theme';
 
-interface M3CardProps {
+interface BuddyCardProps {
   children: React.ReactNode;
   style?: ViewStyle | ViewStyle[];
   variant?: 'elevated' | 'filled' | 'outlined';
+  onPress?: () => void;
 }
 
-export default function M3Card({ children, style, variant = 'filled' }: M3CardProps) {
+export default function BuddyCard({ children, style, variant = 'filled', onPress }: BuddyCardProps) {
   const mode = variant === 'elevated' ? 'elevated' : variant === 'outlined' ? 'outlined' : 'contained';
 
   return (
     <PaperCard
       mode={mode}
+      onPress={onPress}
       style={[
         {
-          borderRadius: 16,
-          padding: 14,
-          marginVertical: 6,
-          backgroundColor: variant === 'filled' ? md3Colors.surfaceContainerHigh : undefined,
+          borderRadius: theme.roundness.lg,
+          padding: theme.spacing.md,
+          marginVertical: theme.spacing.xs,
+          backgroundColor: variant === 'filled' ? theme.colors.surfaceContainer : undefined,
         },
         style,
       ]}

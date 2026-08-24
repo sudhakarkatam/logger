@@ -1,9 +1,9 @@
 import React from 'react';
 import { ViewStyle, TextStyle } from 'react-native';
 import { Button as PaperButton } from 'react-native-paper';
-import { md3Colors } from '../../../theme';
+import { theme } from '../../../theme';
 
-interface M3ButtonProps {
+interface BuddyButtonProps {
   label: string;
   onPress: () => void;
   variant?: 'filled' | 'tonal' | 'outlined' | 'text';
@@ -13,15 +13,15 @@ interface M3ButtonProps {
   labelStyle?: TextStyle;
 }
 
-export default function M3Button({
+export default function BuddyButton({
   label,
   onPress,
   variant = 'filled',
+  icon,
   disabled = false,
   style,
   labelStyle,
-}: M3ButtonProps) {
-  // Map custom variant string to Paper mode
+}: BuddyButtonProps) {
   const mode =
     variant === 'filled'
       ? 'contained'
@@ -35,10 +35,23 @@ export default function M3Button({
     <PaperButton
       mode={mode}
       onPress={onPress}
+      icon={icon}
       disabled={disabled}
-      style={[{ borderRadius: 20 }, style]}
-      labelStyle={[{ fontWeight: 'bold' }, labelStyle]}
-      buttonColor={variant === 'filled' ? md3Colors.primary : undefined}
+      style={[
+        {
+          borderRadius: theme.roundness.lg,
+          minHeight: theme.touchTarget.minSize,
+          justifyContent: 'center',
+        },
+        style,
+      ]}
+      labelStyle={[
+        {
+          fontSize: 14,
+          fontWeight: '600',
+        },
+        labelStyle,
+      ]}
     >
       {label}
     </PaperButton>
