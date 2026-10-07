@@ -30,7 +30,8 @@
     },
     "plugins": [
       "expo-speech-recognition",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      "expo-font"
     ],
     "web": {
       "favicon": "./assets/favicon.png"

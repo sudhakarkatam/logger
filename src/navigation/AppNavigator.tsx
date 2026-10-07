@@ -3,7 +3,7 @@ import { StyleSheet, View, Pressable, Platform, Animated } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { MaterialCommunityIcons, Ionicons, Octicons, MaterialIcons } from '@expo/vector-icons';
 import { TabType } from './types';
-import { theme } from '../theme';
+import { useAppTheme } from '../theme';
 
 interface AppNavigatorProps {
   activeTab: TabType;
@@ -43,10 +43,10 @@ const NAV_ITEMS: NavItemConfig[] = [
   },
   {
     key: 'notifications',
-    family: 'MaterialIcons',
-    activeIcon: 'alarm',
-    inactiveIcon: 'alarm',
-    label: 'Alerts',
+    family: 'Ionicons',
+    activeIcon: 'notifications',
+    inactiveIcon: 'notifications-outline',
+    label: 'Reminders',
   },
   {
     key: 'settings',
@@ -61,10 +61,12 @@ function NavTabButton({
   item,
   isActive,
   onPress,
+  colors,
 }: {
   item: NavItemConfig;
   isActive: boolean;
   onPress: () => void;
+  colors: any;
 }) {
   const activeAnim = useRef(new Animated.Value(isActive ? 1 : 0)).current;
 
@@ -84,7 +86,7 @@ function NavTabButton({
 
   const renderNavIcon = () => {
     const iconName = isActive ? item.activeIcon : item.inactiveIcon;
-    const iconColor = isActive ? theme.colors.onSecondaryContainer : theme.colors.onSurfaceVariant;
+    const iconColor = isActive ? colors.onSecondaryContainer : colors.onSurfaceVariant;
     const size = 24;
 
     if (item.family === 'MaterialIcons') {
@@ -115,6 +117,7 @@ function NavTabButton({
           style={[
             styles.activeIndicator,
             {
+              backgroundColor: colors.secondaryContainer,
               opacity: activeAnim,
               transform: [{ scaleX: scale }],
             },
@@ -127,8 +130,15 @@ function NavTabButton({
 }
 
 export default function AppNavigator({ activeTab, onTabChange }: AppNavigatorProps) {
+  const { colors } = useAppTheme();
+
   return (
-    <View style={styles.barSurface}>
+    <View
+      style={[
+        styles.barSurface,
+        { backgroundColor: colors.surfaceContainer, borderTopColor: colors.outlineVariant },
+      ]}
+    >
       <View style={styles.navRow}>
         {NAV_ITEMS.map((item) => (
           <NavTabButton
@@ -136,6 +146,7 @@ export default function AppNavigator({ activeTab, onTabChange }: AppNavigatorPro
             item={item}
             isActive={activeTab === item.key}
             onPress={() => onTabChange(item.key)}
+            colors={colors}
           />
         ))}
       </View>
@@ -145,9 +156,7 @@ export default function AppNavigator({ activeTab, onTabChange }: AppNavigatorPro
 
 const styles = StyleSheet.create({
   barSurface: {
-    backgroundColor: theme.colors.surfaceContainer,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.outlineVariant,
     elevation: 3,
   },
   navRow: {
@@ -175,7 +184,6 @@ const styles = StyleSheet.create({
     width: 56,
     height: 32,
     borderRadius: 16,
-    backgroundColor: theme.colors.secondaryContainer,
   },
   icon: {
     zIndex: 2,

@@ -9,318 +9,934 @@ import {
   Alert,
   ActivityIndicator,
   Switch,
-  SafeAreaView,
-  StatusBar,
   Platform,
+  BackHandler,
+  Modal,
 } from 'react-native';
-import { md3Colors, md3Typography } from '../theme';
+import * as Haptics from 'expo-haptics';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useAppTheme } from '../theme';
 import {
   getNotificationPermissionStatus,
   registerForPushNotificationsAsync,
-  getAllScheduledReminders,
-  cancelScheduledReminder,
-  cancelAllReminders,
-  PRESET_REMINDERS,
-  schedulePresetReminder,
-  scheduleCustomReminder,
+  getUserReminders,
+  createUserReminder,
+  updateUserReminder,
+  deleteUserReminder,
+  toggleUserReminder,
+  clearAllUserReminders,
+  scheduleRelativeReminder,
   sendInstantLocalNotification,
-  ScheduledNotificationItem,
+  formatTimeDisplay,
+  getRepeatLabel,
+  getCategoryIcon,
+  ReminderItem,
+  RepeatMode,
+  ReminderCategory,
 } from '../services/notifications';
-import M3Card from './ui/m3/M3Card';
-import M3Button from './ui/m3/M3Button';
+import { Snackbar } from 'react-native-paper';
 
 interface NotificationManagerScreenProps {
   onBack: () => void;
 }
 
+const CATEGORY_OPTIONS: { id: ReminderCategory; label: string; icon: string }[] = [
+  { id: 'habit', label: 'Habit', icon: 'target' },
+  { id: 'health', label: 'Health', icon: 'pill' },
+  { id: 'meal', label: 'Meal', icon: 'food-apple-outline' },
+  { id: 'reflection', label: 'Reflection', icon: 'sparkles' },
+  { id: 'general', label: 'General', icon: 'bell-outline' },
+];
+
+const REPEAT_OPTIONS: { id: RepeatMode; label: string; icon: string }[] = [
+  { id: 'daily', label: 'Daily', icon: 'calendar-sync' },
+  { id: 'weekdays', label: 'Mon – Fri', icon: 'briefcase-outline' },
+  { id: 'weekends', label: 'Sat – Sun', icon: 'beach' },
+  { id: 'weekly', label: 'Weekly', icon: 'calendar-week' },
+  { id: 'once', label: 'Once', icon: 'timer-outline' },
+];
+
+const WEEKDAY_NAMES = [
+  { day: 1, label: 'Sun' },
+  { day: 2, label: 'Mon' },
+  { day: 3, label: 'Tue' },
+  { day: 4, label: 'Wed' },
+  { day: 5, label: 'Thu' },
+  { day: 6, label: 'Fri' },
+  { day: 7, label: 'Sat' },
+];
+
+const QUICK_PRESETS = [
+  { title: '💧 Drink 500ml Water', body: 'Hydration check-in', category: 'health' as ReminderCategory, hour: 11, minute: 0, repeat: 'daily' as RepeatMode },
+  { title: '💊 Evening Vitamins', body: 'Take supplements', category: 'health' as ReminderCategory, hour: 21, minute: 0, repeat: 'daily' as RepeatMode },
+  { title: '🏃 Stand & Stretch', body: '5 min movement break', category: 'habit' as ReminderCategory, hour: 15, minute: 30, repeat: 'weekdays' as RepeatMode },
+];
+
 export default function NotificationManagerScreen({ onBack }: NotificationManagerScreenProps) {
+  const { colors, isDark } = useAppTheme();
   const [permGranted, setPermGranted] = useState(false);
-  const [scheduledList, setScheduledList] = useState<ScheduledNotificationItem[]>([]);
-  const [customTitle, setCustomTitle] = useState('');
-  const [customBody, setCustomBody] = useState('');
-  const [customHour, setCustomHour] = useState('20');
-  const [customMinute, setCustomMinute] = useState('00');
+  const [reminders, setReminders] = useState<ReminderItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [filterMode, setFilterMode] = useState<'all' | 'daily' | 'weekdays' | 'once'>('all');
+
+  // Modal State (Create / Edit)
+  const [modalVisible, setModalVisible] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formTitle, setFormTitle] = useState('');
+  const [formBody, setFormBody] = useState('');
+  const [formCategory, setFormCategory] = useState<ReminderCategory>('habit');
+  const [formHour12, setFormHour12] = useState('8');
+  const [formMinute, setFormMinute] = useState('00');
+  const [formPeriod, setFormPeriod] = useState<'AM' | 'PM'>('AM');
+  const [formRepeatMode, setFormRepeatMode] = useState<RepeatMode>('daily');
+  const [formWeekday, setFormWeekday] = useState(2); // Monday default
 
   useEffect(() => {
-    loadNotificationData();
+    loadReminders();
   }, []);
 
-  async function loadNotificationData() {
+  // Hardware back navigation handler
+  useEffect(() => {
+    const onBackPress = () => {
+      if (modalVisible) {
+        setModalVisible(false);
+        return true;
+      }
+      onBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [onBack, modalVisible]);
+
+  async function loadReminders() {
     setLoading(true);
     const perm = await getNotificationPermissionStatus();
     setPermGranted(perm.granted);
-    const list = await getAllScheduledReminders();
-    setScheduledList(list);
+    const list = await getUserReminders();
+    setReminders(list);
     setLoading(false);
   }
 
   async function handleRequestPermission() {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     await registerForPushNotificationsAsync();
     const perm = await getNotificationPermissionStatus();
     setPermGranted(perm.granted);
     if (perm.granted) {
-      Alert.alert('Permission Granted', 'Push notification permissions are active!');
+      setStatusMessage('Notifications enabled successfully!');
     } else {
-      Alert.alert('Permission Required', 'Please enable notifications for Buddy in your phone system settings.');
+      Alert.alert(
+        'Permission Required',
+        'Please allow notifications in your device system settings to receive reminders.'
+      );
     }
   }
 
-  async function handleSchedulePreset(type: string, label: string) {
-    const success = await schedulePresetReminder(type);
-    if (success) {
-      setStatusMessage(`Scheduled [${label}] daily reminder!`);
-      setTimeout(() => setStatusMessage(''), 3000);
-      loadNotificationData();
-    } else {
-      Alert.alert('Schedule Error', 'Could not schedule preset reminder.');
-    }
+  function openCreateModal() {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setEditingId(null);
+    setFormTitle('');
+    setFormBody('');
+    setFormCategory('habit');
+    setFormHour12('8');
+    setFormMinute('00');
+    setFormPeriod('AM');
+    setFormRepeatMode('daily');
+    setFormWeekday(2);
+    setModalVisible(true);
   }
 
-  async function handleAddCustomReminder() {
-    const hr = parseInt(customHour, 10);
-    const min = parseInt(customMinute, 10);
+  function openEditModal(item: ReminderItem) {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setEditingId(item.id);
+    setFormTitle(item.title);
+    setFormBody(item.body || '');
+    setFormCategory(item.category || 'general');
 
-    if (isNaN(hr) || hr < 0 || hr > 23 || isNaN(min) || min < 0 || min > 59) {
-      Alert.alert('Invalid Time', 'Please enter a valid hour (0-23) and minute (0-59).');
+    const period = item.hour >= 12 ? 'PM' : 'AM';
+    const h12 = item.hour % 12 === 0 ? 12 : item.hour % 12;
+    setFormHour12(h12.toString());
+    setFormMinute(item.minute.toString().padStart(2, '0'));
+    setFormPeriod(period);
+    setFormRepeatMode(item.repeatMode || 'daily');
+    setFormWeekday(item.weekday || 2);
+    setModalVisible(true);
+  }
+
+  async function handleSaveReminder() {
+    const trimmedTitle = formTitle.trim();
+    if (!trimmedTitle) {
+      Alert.alert('Title Required', 'Please enter a name for the reminder.');
       return;
     }
 
-    const success = await scheduleCustomReminder(
-      customTitle || '✨ Buddy Log Reminder',
-      customBody || 'Take 30 seconds to log your reflections today!',
-      hr,
-      min
-    );
+    const hrNum = parseInt(formHour12, 10);
+    const minNum = parseInt(formMinute, 10);
 
-    if (success) {
-      setStatusMessage(`Scheduled custom alarm for ${hr.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}`);
-      setTimeout(() => setStatusMessage(''), 3000);
-      setCustomTitle('');
-      setCustomBody('');
-      loadNotificationData();
+    if (isNaN(hrNum) || hrNum < 1 || hrNum > 12) {
+      Alert.alert('Invalid Hour', 'Please enter an hour between 1 and 12.');
+      return;
     }
+    if (isNaN(minNum) || minNum < 0 || minNum > 59) {
+      Alert.alert('Invalid Minute', 'Please enter minutes between 00 and 59.');
+      return;
+    }
+
+    // Convert to 24-hour format
+    let hour24 = hrNum;
+    if (formPeriod === 'AM') {
+      hour24 = hrNum === 12 ? 0 : hrNum;
+    } else {
+      hour24 = hrNum === 12 ? 12 : hrNum + 12;
+    }
+
+    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+
+    if (editingId) {
+      await updateUserReminder(editingId, {
+        title: trimmedTitle,
+        body: formBody.trim(),
+        category: formCategory,
+        hour: hour24,
+        minute: minNum,
+        repeatMode: formRepeatMode,
+        weekday: formRepeatMode === 'weekly' ? formWeekday : undefined,
+      });
+      setStatusMessage('Reminder updated!');
+    } else {
+      await createUserReminder({
+        title: trimmedTitle,
+        body: formBody.trim(),
+        category: formCategory,
+        hour: hour24,
+        minute: minNum,
+        repeatMode: formRepeatMode,
+        weekday: formRepeatMode === 'weekly' ? formWeekday : undefined,
+        enabled: true,
+      });
+      setStatusMessage('Reminder created!');
+    }
+
+    setModalVisible(false);
+    loadReminders();
   }
 
-  async function handleCancelReminder(id: string, title: string) {
-    await cancelScheduledReminder(id);
-    setStatusMessage(`Cancelled reminder: ${title}`);
-    setTimeout(() => setStatusMessage(''), 3000);
-    loadNotificationData();
+  async function handleToggle(id: string) {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    const newState = await toggleUserReminder(id);
+    setReminders((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, enabled: newState } : r))
+    );
+    setStatusMessage(newState ? 'Reminder activated' : 'Reminder paused');
   }
 
-  async function handleClearAllReminders() {
-    Alert.alert('Clear All Alarms', 'Are you sure you want to cancel all scheduled reminders?', [
+  async function handleDelete(id: string, title: string) {
+    Alert.alert(
+      'Delete Reminder',
+      `Are you sure you want to delete "${title}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+            await deleteUserReminder(id);
+            setReminders((prev) => prev.filter((r) => r.id !== id));
+            setStatusMessage('Reminder deleted');
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleQuickTimer(minutes: number, label: string) {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    await scheduleRelativeReminder('✨ Buddy Timer', label, minutes * 60);
+    setStatusMessage(`Timer set for ${minutes} mins!`);
+    loadReminders();
+  }
+
+  async function handleAddPreset(preset: typeof QUICK_PRESETS[0]) {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    await createUserReminder({
+      title: preset.title,
+      body: preset.body,
+      category: preset.category,
+      hour: preset.hour,
+      minute: preset.minute,
+      repeatMode: preset.repeat,
+      enabled: true,
+    });
+    setStatusMessage(`Added "${preset.title}"!`);
+    loadReminders();
+  }
+
+  async function handleClearAll() {
+    Alert.alert('Clear All Reminders', 'Are you sure you want to cancel and remove all scheduled reminders?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Clear All',
         style: 'destructive',
         onPress: async () => {
-          await cancelAllReminders();
-          setScheduledList([]);
-          setStatusMessage('Cleared all scheduled alarms.');
-          setTimeout(() => setStatusMessage(''), 3000);
+          if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+          await clearAllUserReminders();
+          setReminders([]);
+          setStatusMessage('All reminders cleared');
         },
       },
     ]);
   }
 
-  async function handleTestNotification() {
+  async function handleSendTest() {
+    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     await sendInstantLocalNotification(
-      '✨ Buddy Push Notification',
-      'Native local notifications are 100% active and working!'
+      '✨ Buddy Test Alert',
+      'System notification delivery is working properly!'
     );
+    setStatusMessage('Test notification sent!');
   }
 
-  const presetColors: Record<string, string> = {
-    morning: '#6366F1',
-    lunch: '#10B981',
-    evening: '#F59E0B',
-    expiry: '#EC4899',
-  };
+  // Filter reminders
+  const filteredReminders = reminders.filter((r) => {
+    if (filterMode === 'all') return true;
+    if (filterMode === 'daily') return r.repeatMode === 'daily';
+    if (filterMode === 'weekdays') return r.repeatMode === 'weekdays';
+    if (filterMode === 'once') return r.repeatMode === 'once';
+    return true;
+  });
 
   return (
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#1E202B" />
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Material 3 App Bar with Back Navigation */}
+      <View
+        style={[
+          styles.topBar,
+          {
+            backgroundColor: colors.surfaceContainer,
+            borderBottomColor: colors.outlineVariant,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => {
+            if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            onBack();
+          }}
+          activeOpacity={0.7}
+        >
+          <MaterialCommunityIcons name="arrow-left" size={24} color={colors.onSurface} />
+        </TouchableOpacity>
 
-      {/* Immersive Dark Hero Header */}
-      <View style={styles.heroHeader}>
-        <View style={styles.topAppBarRow}>
-          <Text style={styles.topAppBarTitle}>Notification Control Center</Text>
+        <View style={styles.topBarTitleWrapper}>
+          <Text style={[styles.topBarTitle, { color: colors.onSurface }]} numberOfLines={1}>
+            Reminders & Alerts
+          </Text>
+          <Text style={[styles.topBarSubtitle, { color: colors.onSurfaceVariant }]} numberOfLines={1}>
+            Custom schedules • Repeating habits
+          </Text>
         </View>
 
-        <View style={styles.heroTitleRow}>
-          <View style={styles.heroIconBadge}>
-            <Text style={{ fontSize: 22 }}>🔔</Text>
-          </View>
-          <View>
-            <Text style={styles.heroTitle}>Alarms & Reminders</Text>
-            <Text style={styles.heroSubtitle}>System Alarms & Proactive AI Triggers</Text>
-          </View>
-        </View>
-
-        {/* Live Permission Indicator Banner */}
-        <View style={[styles.permBanner, { backgroundColor: permGranted ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)' }]}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.permBannerTitle, { color: permGranted ? '#10B981' : '#EF4444' }]}>
-              {permGranted ? 'Notification Permissions Active ✅' : 'Notification Access Required ⚠️'}
-            </Text>
-            <Text style={styles.permBannerDesc}>
-              {permGranted
-                ? 'Buddy is authorized to send daily habit briefings and kitchen warnings.'
-                : 'Enable system notifications to receive daily habit alarms.'}
-            </Text>
-          </View>
-
-          {!permGranted && (
-            <TouchableOpacity style={styles.grantBtn} onPress={handleRequestPermission}>
-              <Text style={styles.grantBtnText}>Enable</Text>
-            </TouchableOpacity>
-          )}
+        <View style={styles.topBarActions}>
+          <TouchableOpacity
+            style={[
+              styles.testPingBtn,
+              { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+            ]}
+            onPress={handleSendTest}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="bell-ring-outline" size={16} color={colors.primary} />
+            <Text style={[styles.testPingText, { color: colors.primary }]}>Test</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* Scrollable Management Interface */}
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
-        {statusMessage ? (
-          <View style={styles.statusToast}>
-            <Text style={styles.statusToastText}>{statusMessage}</Text>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Permission Notice (only if disabled) */}
+        {!permGranted && (
+          <View
+            style={[
+              styles.permCard,
+              { backgroundColor: `${colors.error}15`, borderColor: `${colors.error}40` },
+            ]}
+          >
+            <View style={styles.permIconBox}>
+              <MaterialCommunityIcons name="bell-off-outline" size={22} color={colors.error} />
+            </View>
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              <Text style={[styles.permTitle, { color: colors.error }]}>Notifications Disabled</Text>
+              <Text style={[styles.permSubtitle, { color: colors.onSurfaceVariant }]}>
+                Enable notifications to receive habit alerts and reminders.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.enableBtn, { backgroundColor: colors.error }]}
+              onPress={handleRequestPermission}
+            >
+              <Text style={[styles.enableBtnText, { color: colors.onError }]}>Enable</Text>
+            </TouchableOpacity>
           </View>
-        ) : null}
+        )}
 
-        {/* Visual Preset Alarm Cards */}
-        <Text style={styles.sectionHeader}>⚡ Daily Alarm Presets</Text>
-        <Text style={styles.sectionSub}>Tap any card below to schedule a recurring daily alarm</Text>
+        {/* Action Header: Create Button & Filter Chips */}
+        <View style={styles.actionHeaderRow}>
+          <TouchableOpacity
+            style={[styles.addReminderBtn, { backgroundColor: colors.primary }]}
+            onPress={openCreateModal}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="plus" size={18} color={colors.onPrimary} />
+            <Text style={[styles.addReminderBtnText, { color: colors.onPrimary }]}>Add Reminder</Text>
+          </TouchableOpacity>
 
-        <View style={styles.presetCardsGrid}>
-          {PRESET_REMINDERS.map((p) => {
-            const color = presetColors[p.type] || md3Colors.primary;
-            return (
-              <TouchableOpacity
-                key={p.type}
-                style={[styles.presetCard, { borderColor: `${color}40` }]}
-                onPress={() => handleSchedulePreset(p.type, p.label)}
-                activeOpacity={0.85}
-              >
-                <View style={styles.presetCardTop}>
-                  <View style={[styles.presetBadge, { backgroundColor: `${color}25` }]}>
-                    <Text style={{ fontSize: 18 }}>{p.label.split(' ')[0]}</Text>
-                  </View>
-                  <Text style={[styles.presetTimeText, { color }]}>
-                    {p.hour.toString().padStart(2, '0')}:{p.minute.toString().padStart(2, '0')}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            {(['all', 'daily', 'weekdays', 'once'] as const).map((mode) => {
+              const active = filterMode === mode;
+              const count =
+                mode === 'all'
+                  ? reminders.length
+                  : reminders.filter((r) => r.repeatMode === mode).length;
+
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={[
+                    styles.filterChip,
+                    active
+                      ? { backgroundColor: colors.primaryContainer, borderColor: colors.primary }
+                      : { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant },
+                  ]}
+                  onPress={() => setFilterMode(mode)}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      { color: active ? colors.onPrimaryContainer : colors.onSurfaceVariant },
+                    ]}
+                  >
+                    {mode.charAt(0).toUpperCase() + mode.slice(1)} ({count})
                   </Text>
-                </View>
-
-                <Text style={styles.presetTitleText}>{p.label.substring(2)}</Text>
-                <Text style={styles.presetBodyText}>{p.body}</Text>
-
-                <View style={[styles.addPresetBtn, { backgroundColor: `${color}20` }]}>
-                  <Text style={[styles.addPresetBtnText, { color }]}>+ Schedule Daily</Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
         </View>
 
-        {/* Active Scheduled Reminders Queue */}
-        <View style={styles.sectionHeaderRow}>
-          <View>
-            <Text style={styles.sectionHeader}>⏰ Active Scheduled Alarms ({scheduledList.length})</Text>
-            <Text style={styles.sectionSub}>Currently registered with phone OS</Text>
-          </View>
-
-          {scheduledList.length > 0 && (
-            <TouchableOpacity onPress={handleClearAllReminders}>
-              <Text style={{ color: md3Colors.error, fontSize: 12, fontWeight: 'bold' }}>Clear All 🗑️</Text>
+        {/* Reminders List */}
+        <View style={styles.sectionHeaderRowBetween}>
+          <Text style={[styles.sectionTitle, { color: colors.onSurfaceVariant }]}>
+            SCHEDULED REMINDERS ({filteredReminders.length})
+          </Text>
+          {reminders.length > 0 && (
+            <TouchableOpacity onPress={handleClearAll} activeOpacity={0.7}>
+              <Text style={[styles.clearAllText, { color: colors.error }]}>Clear All</Text>
             </TouchableOpacity>
           )}
         </View>
 
         {loading ? (
-          <ActivityIndicator color={md3Colors.primary} style={{ marginVertical: 20 }} />
-        ) : scheduledList.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={{ fontSize: 32, marginBottom: 6 }}>🔕</Text>
-            <Text style={styles.emptyTitle}>No Active Alarms Scheduled</Text>
-            <Text style={styles.emptySub}>Tap a preset above or create a custom alarm below to get started.</Text>
+          <View style={styles.loadingBox}>
+            <ActivityIndicator size="small" color={colors.primary} />
+          </View>
+        ) : filteredReminders.length === 0 ? (
+          <View
+            style={[
+              styles.emptyCard,
+              { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant },
+            ]}
+          >
+            <MaterialCommunityIcons name="bell-sleep-outline" size={40} color={colors.outline} />
+            <Text style={[styles.emptyTitle, { color: colors.onSurface }]}>No Reminders Found</Text>
+            <Text style={[styles.emptySubtitle, { color: colors.onSurfaceVariant }]}>
+              Tap "Add Reminder" to schedule a recurring habit or one-time alert.
+            </Text>
           </View>
         ) : (
-          scheduledList.map((item) => (
-            <View key={item.id} style={styles.alarmItemRow}>
-              <View style={styles.alarmTimeBadge}>
-                <Text style={styles.alarmTimeText}>
-                  {item.timeLabel ? item.timeLabel : `${item.hour !== undefined ? item.hour.toString().padStart(2, '0') : '--'}:${item.minute !== undefined ? item.minute.toString().padStart(2, '0') : '00'}`}
-                </Text>
-              </View>
+          <View style={styles.reminderListContainer}>
+            {filteredReminders.map((item) => {
+              const icon = getCategoryIcon(item.category || 'general');
+              const repeatLabel = getRepeatLabel(item.repeatMode, item.weekday);
+              const timeDisplay = formatTimeDisplay(item.hour, item.minute);
 
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.alarmTitleText}>{item.title}</Text>
-                {item.body ? <Text style={styles.alarmBodyText}>{item.body}</Text> : null}
-              </View>
+              return (
+                <View
+                  key={item.id}
+                  style={[
+                    styles.reminderCard,
+                    {
+                      backgroundColor: colors.surfaceContainer,
+                      borderColor: colors.outlineVariant,
+                      opacity: item.enabled ? 1 : 0.65,
+                    },
+                  ]}
+                >
+                  <View style={styles.reminderCardTop}>
+                    <View
+                      style={[
+                        styles.reminderIconBox,
+                        { backgroundColor: `${colors.primary}15` },
+                      ]}
+                    >
+                      <MaterialCommunityIcons name={icon as any} size={20} color={colors.primary} />
+                    </View>
 
-              <TouchableOpacity
-                style={styles.cancelAlarmBtn}
-                onPress={() => handleCancelReminder(item.id, item.title)}
-              >
-                <Text style={styles.cancelAlarmBtnText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          ))
+                    <View style={styles.reminderInfo}>
+                      <Text style={[styles.reminderTitle, { color: colors.onSurface }]} numberOfLines={1}>
+                        {item.title}
+                      </Text>
+                      {!!item.body && (
+                        <Text style={[styles.reminderBody, { color: colors.onSurfaceVariant }]} numberOfLines={1}>
+                          {item.body}
+                        </Text>
+                      )}
+
+                      <View style={styles.reminderMetaRow}>
+                        <Text style={[styles.reminderTimeText, { color: colors.primary }]}>
+                          {timeDisplay}
+                        </Text>
+                        <View
+                          style={[
+                            styles.repeatBadge,
+                            { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name={
+                              item.repeatMode === 'daily'
+                                ? 'calendar-sync'
+                                : item.repeatMode === 'weekdays'
+                                ? 'briefcase-outline'
+                                : item.repeatMode === 'once'
+                                ? 'timer-outline'
+                                : 'calendar-week'
+                            }
+                            size={12}
+                            color={colors.onSurfaceVariant}
+                          />
+                          <Text style={[styles.repeatBadgeText, { color: colors.onSurfaceVariant }]}>
+                            {repeatLabel}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Status Toggle Switch */}
+                    <Switch
+                      value={item.enabled}
+                      onValueChange={() => handleToggle(item.id)}
+                      trackColor={{ false: colors.surfaceContainerHighest, true: `${colors.primary}77` }}
+                      thumbColor={item.enabled ? colors.primary : colors.outline}
+                    />
+                  </View>
+
+                  {/* Card Bottom Actions */}
+                  <View style={[styles.cardActionsRow, { borderTopColor: colors.outlineVariant }]}>
+                    <TouchableOpacity
+                      style={styles.cardActionBtn}
+                      onPress={() => openEditModal(item)}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="pencil-outline" size={16} color={colors.onSurfaceVariant} />
+                      <Text style={[styles.cardActionText, { color: colors.onSurfaceVariant }]}>Edit</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.cardActionBtn}
+                      onPress={() => handleDelete(item.id, item.title)}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={16} color={colors.error} />
+                      <Text style={[styles.cardActionText, { color: colors.error }]}>Delete</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
         )}
 
-        {/* Custom Alarm Creator Sheet */}
-        <M3Card variant="filled" style={styles.creatorCard}>
-          <Text style={styles.creatorTitle}>➕ Create Custom Alarm</Text>
-          <Text style={styles.creatorSub}>Configure a custom daily reminder with personalized time and text.</Text>
+        {/* Quick Suggestion Presets */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: colors.onSurfaceVariant }]}>QUICK HABIT PRESETS</Text>
+        </View>
+        <View
+          style={[
+            styles.presetGroupCard,
+            { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant },
+          ]}
+        >
+          {QUICK_PRESETS.map((p, idx) => (
+            <View key={p.title}>
+              {idx > 0 && <View style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />}
+              <View style={styles.presetRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.presetTitle, { color: colors.onSurface }]}>{p.title}</Text>
+                  <Text style={[styles.presetSub, { color: colors.onSurfaceVariant }]}>
+                    {formatTimeDisplay(p.hour, p.minute)} • {getRepeatLabel(p.repeat)}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.presetAddBtn,
+                    { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                  ]}
+                  onPress={() => handleAddPreset(p)}
+                  activeOpacity={0.7}
+                >
+                  <MaterialCommunityIcons name="plus" size={14} color={colors.primary} />
+                  <Text style={[styles.presetAddBtnText, { color: colors.primary }]}>Add</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </View>
 
-          <Text style={styles.fieldLabel}>Reminder Title:</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="e.g. Daily Gym & Hydration Check"
-            placeholderTextColor={md3Colors.outline}
-            value={customTitle}
-            onChangeText={setCustomTitle}
-          />
-
-          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Message Body:</Text>
-          <TextInput
-            style={styles.textInput}
-            placeholder="e.g. Take 30 seconds to record your workout"
-            placeholderTextColor={md3Colors.outline}
-            value={customBody}
-            onChangeText={setCustomBody}
-          />
-
-          <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Trigger Time (24h format):</Text>
-          <View style={styles.timeRow}>
-            <TextInput
-              style={styles.timeInput}
-              placeholder="20"
-              placeholderTextColor={md3Colors.outline}
-              keyboardType="number-pad"
-              maxLength={2}
-              value={customHour}
-              onChangeText={setCustomHour}
-            />
-            <Text style={styles.timeColon}>:</Text>
-            <TextInput
-              style={styles.timeInput}
-              placeholder="00"
-              placeholderTextColor={md3Colors.outline}
-              keyboardType="number-pad"
-              maxLength={2}
-              value={customMinute}
-              onChangeText={setCustomMinute}
-            />
-
-            <M3Button label="Add Alarm" onPress={handleAddCustomReminder} variant="filled" style={{ marginLeft: 'auto' }} />
-          </View>
-        </M3Card>
-
-        {/* Test Notification Trigger */}
-        <M3Button label="📲 Send Instant Test Push Notification" onPress={handleTestNotification} variant="outlined" style={{ marginBottom: 30 }} />
+        {/* One-Tap Relative Timers */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={[styles.sectionTitle, { color: colors.onSurfaceVariant }]}>QUICK COUNTDOWN TIMERS</Text>
+        </View>
+        <View style={styles.timerPillsRow}>
+          {[
+            { mins: 15, label: '15m Focus' },
+            { mins: 30, label: '30m Break' },
+            { mins: 60, label: '1h Task' },
+            { mins: 120, label: '2h Check' },
+          ].map((t) => (
+            <TouchableOpacity
+              key={t.mins}
+              style={[
+                styles.timerPill,
+                { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant },
+              ]}
+              onPress={() => handleQuickTimer(t.mins, t.label)}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="timer-sand" size={14} color={colors.primary} />
+              <Text style={[styles.timerPillText, { color: colors.onSurface }]}>+{t.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
       </ScrollView>
+
+      {/* Create / Edit Reminder Modal */}
+      <Modal
+        visible={modalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modalCard,
+              { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant },
+            ]}
+          >
+            {/* Modal Header */}
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.onSurface }]}>
+                {editingId ? 'Edit Reminder' : 'New Reminder'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => setModalVisible(false)}
+                style={styles.modalCloseBtn}
+                activeOpacity={0.7}
+              >
+                <MaterialCommunityIcons name="close" size={22} color={colors.onSurfaceVariant} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 480 }}>
+              {/* Title Input */}
+              <Text style={[styles.modalLabel, { color: colors.onSurfaceVariant }]}>TITLE</Text>
+              <TextInput
+                style={[
+                  styles.modalInput,
+                  {
+                    backgroundColor: colors.surfaceContainerHighest,
+                    borderColor: colors.outlineVariant,
+                    color: colors.onSurface,
+                  },
+                ]}
+                placeholder="e.g. Drink Water, Gym Workout..."
+                placeholderTextColor={colors.outline}
+                value={formTitle}
+                onChangeText={setFormTitle}
+              />
+
+              {/* Note / Body Input */}
+              <Text style={[styles.modalLabel, { color: colors.onSurfaceVariant, marginTop: 12 }]}>
+                OPTIONAL NOTE
+              </Text>
+              <TextInput
+                style={[
+                  styles.modalInput,
+                  {
+                    backgroundColor: colors.surfaceContainerHighest,
+                    borderColor: colors.outlineVariant,
+                    color: colors.onSurface,
+                  },
+                ]}
+                placeholder="Short description or reminder details..."
+                placeholderTextColor={colors.outline}
+                value={formBody}
+                onChangeText={setFormBody}
+              />
+
+              {/* Category Picker */}
+              <Text style={[styles.modalLabel, { color: colors.onSurfaceVariant, marginTop: 14 }]}>
+                CATEGORY
+              </Text>
+              <View style={styles.chipGridRow}>
+                {CATEGORY_OPTIONS.map((cat) => {
+                  const isSel = formCategory === cat.id;
+                  return (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={[
+                        styles.selectChip,
+                        isSel
+                          ? { backgroundColor: colors.primaryContainer, borderColor: colors.primary }
+                          : { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                      ]}
+                      onPress={() => setFormCategory(cat.id)}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons
+                        name={cat.icon as any}
+                        size={14}
+                        color={isSel ? colors.onPrimaryContainer : colors.onSurfaceVariant}
+                      />
+                      <Text
+                        style={[
+                          styles.selectChipText,
+                          { color: isSel ? colors.onPrimaryContainer : colors.onSurfaceVariant },
+                        ]}
+                      >
+                        {cat.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Time Picker (Hour : Minute + AM/PM) */}
+              <Text style={[styles.modalLabel, { color: colors.onSurfaceVariant, marginTop: 14 }]}>
+                SCHEDULED TIME
+              </Text>
+              <View style={styles.timePickerContainer}>
+                <View style={styles.timeInputBox}>
+                  <TextInput
+                    style={[
+                      styles.timeDigitInput,
+                      {
+                        backgroundColor: colors.surfaceContainerHighest,
+                        borderColor: colors.outlineVariant,
+                        color: colors.onSurface,
+                      },
+                    ]}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    value={formHour12}
+                    onChangeText={setFormHour12}
+                  />
+                  <Text style={[styles.timeColon, { color: colors.onSurface }]}>:</Text>
+                  <TextInput
+                    style={[
+                      styles.timeDigitInput,
+                      {
+                        backgroundColor: colors.surfaceContainerHighest,
+                        borderColor: colors.outlineVariant,
+                        color: colors.onSurface,
+                      },
+                    ]}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    value={formMinute}
+                    onChangeText={setFormMinute}
+                  />
+                </View>
+
+                {/* AM / PM Toggle */}
+                <View
+                  style={[
+                    styles.ampmToggle,
+                    { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                  ]}
+                >
+                  <TouchableOpacity
+                    style={[
+                      styles.ampmBtn,
+                      formPeriod === 'AM' && { backgroundColor: colors.primary },
+                    ]}
+                    onPress={() => setFormPeriod('AM')}
+                  >
+                    <Text
+                      style={[
+                        styles.ampmText,
+                        { color: formPeriod === 'AM' ? colors.onPrimary : colors.onSurfaceVariant },
+                      ]}
+                    >
+                      AM
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.ampmBtn,
+                      formPeriod === 'PM' && { backgroundColor: colors.primary },
+                    ]}
+                    onPress={() => setFormPeriod('PM')}
+                  >
+                    <Text
+                      style={[
+                        styles.ampmText,
+                        { color: formPeriod === 'PM' ? colors.onPrimary : colors.onSurfaceVariant },
+                      ]}
+                    >
+                      PM
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Quick Time Preset Buttons */}
+              <View style={styles.quickTimeRow}>
+                {[
+                  { label: '08:00 AM', h: '8', m: '00', p: 'AM' as const },
+                  { label: '01:00 PM', h: '1', m: '00', p: 'PM' as const },
+                  { label: '06:00 PM', h: '6', m: '00', p: 'PM' as const },
+                  { label: '08:30 PM', h: '8', m: '30', p: 'PM' as const },
+                ].map((qt) => (
+                  <TouchableOpacity
+                    key={qt.label}
+                    style={[
+                      styles.quickTimeChip,
+                      { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                    ]}
+                    onPress={() => {
+                      setFormHour12(qt.h);
+                      setFormMinute(qt.m);
+                      setFormPeriod(qt.p);
+                    }}
+                  >
+                    <Text style={[styles.quickTimeText, { color: colors.primary }]}>{qt.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {/* Repeat Options */}
+              <Text style={[styles.modalLabel, { color: colors.onSurfaceVariant, marginTop: 14 }]}>
+                REPEAT SCHEDULE
+              </Text>
+              <View style={styles.chipGridRow}>
+                {REPEAT_OPTIONS.map((opt) => {
+                  const isSel = formRepeatMode === opt.id;
+                  return (
+                    <TouchableOpacity
+                      key={opt.id}
+                      style={[
+                        styles.selectChip,
+                        isSel
+                          ? { backgroundColor: colors.primaryContainer, borderColor: colors.primary }
+                          : { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                      ]}
+                      onPress={() => setFormRepeatMode(opt.id)}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons
+                        name={opt.icon as any}
+                        size={14}
+                        color={isSel ? colors.onPrimaryContainer : colors.onSurfaceVariant}
+                      />
+                      <Text
+                        style={[
+                          styles.selectChipText,
+                          { color: isSel ? colors.onPrimaryContainer : colors.onSurfaceVariant },
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Weekday Selector (when Weekly is selected) */}
+              {formRepeatMode === 'weekly' && (
+                <View style={styles.weekdayPickerRow}>
+                  {WEEKDAY_NAMES.map((wd) => {
+                    const isSel = formWeekday === wd.day;
+                    return (
+                      <TouchableOpacity
+                        key={wd.day}
+                        style={[
+                          styles.weekdayCircle,
+                          isSel
+                            ? { backgroundColor: colors.primary }
+                            : { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                        ]}
+                        onPress={() => setFormWeekday(wd.day)}
+                      >
+                        <Text
+                          style={[
+                            styles.weekdayCircleText,
+                            { color: isSel ? colors.onPrimary : colors.onSurfaceVariant },
+                          ]}
+                        >
+                          {wd.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Modal Bottom Action Buttons */}
+            <View style={styles.modalActionRow}>
+              <TouchableOpacity
+                style={[
+                  styles.modalCancelBtn,
+                  { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                ]}
+                onPress={() => setModalVisible(false)}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.modalCancelBtnText, { color: colors.onSurfaceVariant }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalSaveBtn, { backgroundColor: colors.primary }]}
+                onPress={handleSaveReminder}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.modalSaveBtnText, { color: colors.onPrimary }]}>
+                  {editingId ? 'Update Reminder' : 'Save Reminder'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Snackbar Toast */}
+      <Snackbar
+        visible={!!statusMessage}
+        onDismiss={() => setStatusMessage('')}
+        duration={3000}
+        style={{ backgroundColor: colors.surfaceContainerHighest }}
+      >
+        <Text style={{ color: colors.onSurface }}>{statusMessage}</Text>
+      </Snackbar>
     </View>
   );
 }
@@ -328,304 +944,452 @@ export default function NotificationManagerScreen({ onBack }: NotificationManage
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: md3Colors.background,
   },
-  heroHeader: {
-    backgroundColor: '#1E202B',
+  topBar: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: md3Colors.outlineVariant,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  topAppBarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  backIconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+  backBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
-  backIconText: {
-    color: md3Colors.onBackground,
+  topBarTitleWrapper: {
+    flex: 1,
+    marginHorizontal: 8,
+  },
+  topBarTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-  },
-  topAppBarTitle: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onBackground,
     fontWeight: '800',
+    letterSpacing: -0.3,
   },
-  heroTitleRow: {
+  topBarSubtitle: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  topBarActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
   },
-  heroIconBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: md3Colors.primaryContainer,
+  testPingBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
   },
-  heroTitle: {
-    ...md3Typography.headlineMedium,
-    color: md3Colors.onBackground,
-    fontWeight: '800',
+  testPingText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
-  heroSubtitle: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
+  scroll: {
+    flex: 1,
   },
-  permBanner: {
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  permCard: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  permBannerTitle: {
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  permBannerDesc: {
-    fontSize: 11,
-    color: md3Colors.onSurfaceVariant,
-    marginTop: 2,
-  },
-  grantBtn: {
-    backgroundColor: md3Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    marginLeft: 10,
-  },
-  grantBtnText: {
-    color: md3Colors.onPrimary,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  statusToast: {
-    backgroundColor: md3Colors.secondaryContainer,
-    padding: 10,
-    borderRadius: 12,
     marginBottom: 16,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
   },
-  statusToastText: {
-    color: md3Colors.onSecondaryContainer,
-    fontSize: 12,
-    textAlign: 'center',
-    fontWeight: '600',
-  },
-  sectionHeader: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-    fontWeight: '700',
-  },
-  sectionSub: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
-    marginTop: 2,
-    marginBottom: 12,
-  },
-  presetCardsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-  },
-  presetCard: {
-    width: '48%',
-    backgroundColor: md3Colors.surfaceContainerHigh,
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    justifyContent: 'space-between',
-    minHeight: 130,
-  },
-  presetCardTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  presetBadge: {
-    width: 32,
-    height: 32,
+  permIconBox: {
+    width: 36,
+    height: 36,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  presetTimeText: {
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  presetTitleText: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
+  permTitle: {
+    fontSize: 13,
     fontWeight: '700',
   },
-  presetBodyText: {
-    fontSize: 10,
-    color: md3Colors.onSurfaceVariant,
-    marginTop: 2,
-    marginBottom: 10,
-    lineHeight: 14,
-  },
-  addPresetBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  addPresetBtnText: {
+  permSubtitle: {
     fontSize: 11,
-    fontWeight: 'bold',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  enableBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  enableBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  actionHeaderRow: {
+    marginBottom: 16,
+    gap: 12,
+  },
+  addReminderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  addReminderBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  filterScroll: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  filterChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
   sectionHeaderRow: {
+    marginBottom: 8,
+    marginTop: 18,
+  },
+  sectionHeaderRowBetween: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  emptyCard: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    borderRadius: 16,
-    padding: 24,
-    alignItems: 'center',
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  emptyTitle: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-  },
-  emptySub: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurfaceVariant,
-    textAlign: 'center',
+    marginBottom: 10,
     marginTop: 4,
   },
-  alarmItemRow: {
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  clearAllText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  loadingBox: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  emptyCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 20,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    marginBottom: 16,
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 10,
+  },
+  emptySubtitle: {
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  reminderListContainer: {
+    gap: 10,
+    marginBottom: 16,
+  },
+  reminderCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  reminderCardTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: md3Colors.surfaceContainerHigh,
     padding: 14,
-    borderRadius: 16,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
   },
-  alarmTimeBadge: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  reminderIconBox: {
+    width: 40,
+    height: 40,
     borderRadius: 12,
     alignItems: 'center',
-    minWidth: 58,
+    justifyContent: 'center',
   },
-  alarmTimeText: {
-    color: md3Colors.primary,
+  reminderInfo: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 8,
+  },
+  reminderTitle: {
     fontSize: 15,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
-  alarmAmPmText: {
-    color: md3Colors.outline,
-    fontSize: 8,
-    fontWeight: 'bold',
-  },
-  alarmTitleText: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-    fontWeight: '600',
-  },
-  alarmBodyText: {
-    fontSize: 11,
-    color: md3Colors.onSurfaceVariant,
+  reminderBody: {
+    fontSize: 12,
     marginTop: 2,
   },
-  cancelAlarmBtn: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  cancelAlarmBtnText: {
-    color: md3Colors.error,
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  creatorCard: {
-    marginBottom: 20,
-    padding: 16,
-  },
-  creatorTitle: {
-    ...md3Typography.titleMedium,
-    color: md3Colors.onSurface,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  creatorSub: {
-    ...md3Typography.bodyMedium,
-    color: md3Colors.onSurfaceVariant,
-    marginBottom: 14,
-  },
-  fieldLabel: {
-    ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
-    marginBottom: 4,
-    fontWeight: '600',
-  },
-  textInput: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    color: md3Colors.onSurface,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-    borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
-  },
-  timeRow: {
+  reminderMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     marginTop: 6,
   },
-  timeInput: {
-    backgroundColor: md3Colors.surfaceContainerHighest,
-    color: md3Colors.onSurface,
-    width: 48,
-    height: 38,
-    borderRadius: 10,
-    textAlign: 'center',
-    fontSize: 15,
-    fontWeight: 'bold',
+  reminderTimeText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  repeatBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
+  },
+  repeatBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  cardActionsRow: {
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  cardActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+  },
+  cardActionText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  presetGroupCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  presetTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  presetSub: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  presetAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  presetAddBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  divider: {
+    height: 1,
+  },
+  timerPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  timerPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 20,
+    borderWidth: 1,
+  },
+  timerPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    padding: 20,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  modalLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    marginBottom: 6,
+  },
+  modalInput: {
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  chipGridRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  selectChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  selectChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  timePickerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  timeInputBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  timeDigitInput: {
+    width: 60,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    fontSize: 22,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   timeColon: {
-    color: md3Colors.onSurface,
-    fontSize: 18,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  ampmToggle: {
+    flexDirection: 'row',
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 3,
+  },
+  ampmBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 9,
+  },
+  ampmText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  quickTimeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  quickTimeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  quickTimeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  weekdayPickerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 10,
+  },
+  weekdayCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  weekdayCircleText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  modalActionRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 18,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  modalCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modalSaveBtn: {
+    flex: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  modalSaveBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

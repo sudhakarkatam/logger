@@ -8,46 +8,58 @@ import {
   Image,
   Alert,
   Platform,
+  BackHandler,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { theme } from '../theme';
+import { useAppTheme, ThemeMode, theme } from '../theme';
 import BuddyListItem from './ui/m3/BuddyListItem';
 import { Surface, List, Divider, Snackbar } from 'react-native-paper';
-
-export type ThemeMode = 'light' | 'dark' | 'system';
+import { getLocalSettings } from '../services/api';
+import { PROVIDER_DISPLAY } from '../utils/constants';
 
 interface ProfileScreenProps {
   onBack: () => void;
 }
 
 export default function ProfileScreen({ onBack }: ProfileScreenProps) {
+  const { themeMode, setThemeMode, isDark, colors, accentColor, setAccentColor } = useAppTheme();
   const [profileImage, setProfileImage] = useState<string | null>(null);
   const [userName, setUserName] = useState('Sudhakar Katam');
   const [userEmail, setUserEmail] = useState('sudhakar@buddy.ai');
-  const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
-  const [selectedAccent, setSelectedAccent] = useState('#6366F1');
   const [toastMsg, setToastMsg] = useState('');
+  const [activeEngine, setActiveEngine] = useState('Mistral AI (codestral-2508)');
 
   useEffect(() => {
     loadProfile();
   }, []);
+
+  // Hardware back navigation handler
+  useEffect(() => {
+    const onBackPress = () => {
+      onBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [onBack]);
 
   async function loadProfile() {
     try {
       const savedImg = await AsyncStorage.getItem('@buddy_profile_image');
       const savedName = await AsyncStorage.getItem('@buddy_user_name');
       const savedEmail = await AsyncStorage.getItem('@buddy_user_email');
-      const savedTheme = await AsyncStorage.getItem('@buddy_theme_mode');
-      const savedAccent = await AsyncStorage.getItem('@buddy_accent_color');
 
       if (savedImg) setProfileImage(savedImg);
       if (savedName) setUserName(savedName);
       if (savedEmail) setUserEmail(savedEmail);
-      if (savedTheme) setThemeMode(savedTheme as ThemeMode);
-      if (savedAccent) setSelectedAccent(savedAccent);
+
+      const local = await getLocalSettings();
+      const p = local.provider ? ((PROVIDER_DISPLAY as any)[local.provider] || local.provider) : 'Mistral AI';
+      const m = local.model || 'codestral-2508';
+      setActiveEngine(`${p} (${m})`);
     } catch (err: any) {
       console.warn('Error loading profile:', err);
     }
@@ -59,7 +71,7 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
     }
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaType.Images,
+        mediaTypes: ['images'],
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
@@ -83,23 +95,24 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
     if (Platform.OS !== 'web') {
       Haptics.selectionAsync().catch(() => {});
     }
-    setThemeMode(mode);
-    await AsyncStorage.setItem('@buddy_theme_mode', mode);
-    const label = mode === 'light' ? 'Light' : mode === 'dark' ? 'Dark' : 'System Default';
-    setToastMsg(`Theme set to ${label}`);
+    await setThemeMode(mode);
+    const label = mode === 'light' ? 'Light Theme' : mode === 'dark' ? 'Dark Theme' : 'System Default';
+    setToastMsg(`Switched to ${label}`);
   }
 
   async function handleSelectAccent(color: string) {
     if (Platform.OS !== 'web') {
       Haptics.selectionAsync().catch(() => {});
     }
-    setSelectedAccent(color);
-    await AsyncStorage.setItem('@buddy_accent_color', color);
+    await setAccentColor(color);
     setToastMsg('Primary accent color updated!');
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={styles.content}
+    >
       {/* Top App Bar with Back Arrow */}
       <View style={styles.topBar}>
         <TouchableOpacity
@@ -111,36 +124,40 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
             onBack();
           }}
         >
-          <MaterialCommunityIcons name="arrow-left" size={24} color={theme.colors.onSurface} />
+          <MaterialCommunityIcons name="arrow-left" size={24} color={colors.onSurface} />
         </TouchableOpacity>
-        <Text style={styles.topBarTitle}>Profile & Appearance</Text>
+        <Text style={[styles.topBarTitle, { color: colors.onSurface }]}>Profile & Appearance</Text>
       </View>
 
-      {/* Clean Frameless Profile Avatar Header Section (No background card) */}
+      {/* Clean Frameless Profile Avatar Header Section */}
       <View style={styles.avatarHeaderContainer}>
         <View style={styles.avatarWrapper}>
           <Image
             source={{
               uri: profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200',
             }}
-            style={styles.avatarImage}
+            style={[styles.avatarImage, { borderColor: colors.primary }]}
           />
-          <TouchableOpacity style={styles.editBadge} onPress={pickProfileImage} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={[styles.editBadge, { backgroundColor: colors.primary, borderColor: colors.background }]}
+            onPress={pickProfileImage}
+            activeOpacity={0.8}
+          >
             <MaterialCommunityIcons name="camera-outline" size={18} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.avatarName}>{userName}</Text>
-        <Text style={styles.avatarEmail}>{userEmail}</Text>
+        <Text style={[styles.avatarName, { color: colors.onSurface }]}>{userName}</Text>
+        <Text style={[styles.avatarEmail, { color: colors.onSurfaceVariant }]}>{userEmail}</Text>
 
         <TouchableOpacity onPress={pickProfileImage} style={styles.changePicBtn}>
-          <Text style={styles.changePicText}>Change Profile Picture</Text>
+          <Text style={[styles.changePicText, { color: colors.primary }]}>Change Profile Picture</Text>
         </TouchableOpacity>
       </View>
 
       {/* MD3 Theme Preferences Section (Light / Dark / System Default) */}
-      <List.Section style={styles.section}>
-        <List.Subheader style={styles.subheader}>THEME PREFERENCES</List.Subheader>
+      <List.Section style={[styles.section, { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant }]}>
+        <List.Subheader style={[styles.subheader, { color: colors.primary }]}>THEME PREFERENCES</List.Subheader>
 
         {/* 3-Way Theme Option Cards */}
         <View style={styles.themeOptionsGrid}>
@@ -148,21 +165,22 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           <TouchableOpacity
             style={[
               styles.themeOptionCard,
-              themeMode === 'light' && styles.themeOptionCardActive,
+              { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+              themeMode === 'light' && [styles.themeOptionCardActive, { borderColor: colors.primary, backgroundColor: `${colors.primary}15` }],
             ]}
             onPress={() => handleSelectTheme('light')}
           >
             <MaterialCommunityIcons
               name="weather-sunny"
               size={24}
-              color={themeMode === 'light' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              color={themeMode === 'light' ? colors.primary : colors.onSurfaceVariant}
             />
-            <Text style={[styles.themeOptionTitle, themeMode === 'light' && styles.themeOptionTitleActive]}>
+            <Text style={[styles.themeOptionTitle, { color: themeMode === 'light' ? colors.primary : colors.onSurfaceVariant }]}>
               Light
             </Text>
             {themeMode === 'light' && (
               <View style={styles.checkBadge}>
-                <MaterialCommunityIcons name="check-circle" size={16} color={theme.colors.primary} />
+                <MaterialCommunityIcons name="check-circle" size={16} color={colors.primary} />
               </View>
             )}
           </TouchableOpacity>
@@ -171,21 +189,22 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           <TouchableOpacity
             style={[
               styles.themeOptionCard,
-              themeMode === 'dark' && styles.themeOptionCardActive,
+              { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+              themeMode === 'dark' && [styles.themeOptionCardActive, { borderColor: colors.primary, backgroundColor: `${colors.primary}15` }],
             ]}
             onPress={() => handleSelectTheme('dark')}
           >
             <MaterialCommunityIcons
               name="weather-night"
               size={24}
-              color={themeMode === 'dark' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              color={themeMode === 'dark' ? colors.primary : colors.onSurfaceVariant}
             />
-            <Text style={[styles.themeOptionTitle, themeMode === 'dark' && styles.themeOptionTitleActive]}>
+            <Text style={[styles.themeOptionTitle, { color: themeMode === 'dark' ? colors.primary : colors.onSurfaceVariant }]}>
               Dark
             </Text>
             {themeMode === 'dark' && (
               <View style={styles.checkBadge}>
-                <MaterialCommunityIcons name="check-circle" size={16} color={theme.colors.primary} />
+                <MaterialCommunityIcons name="check-circle" size={16} color={colors.primary} />
               </View>
             )}
           </TouchableOpacity>
@@ -194,30 +213,31 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
           <TouchableOpacity
             style={[
               styles.themeOptionCard,
-              themeMode === 'system' && styles.themeOptionCardActive,
+              { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+              themeMode === 'system' && [styles.themeOptionCardActive, { borderColor: colors.primary, backgroundColor: `${colors.primary}15` }],
             ]}
             onPress={() => handleSelectTheme('system')}
           >
             <MaterialCommunityIcons
               name="cellphone-cog"
               size={24}
-              color={themeMode === 'system' ? theme.colors.primary : theme.colors.onSurfaceVariant}
+              color={themeMode === 'system' ? colors.primary : colors.onSurfaceVariant}
             />
-            <Text style={[styles.themeOptionTitle, themeMode === 'system' && styles.themeOptionTitleActive]}>
+            <Text style={[styles.themeOptionTitle, { color: themeMode === 'system' ? colors.primary : colors.onSurfaceVariant }]}>
               System
             </Text>
             {themeMode === 'system' && (
               <View style={styles.checkBadge}>
-                <MaterialCommunityIcons name="check-circle" size={16} color={theme.colors.primary} />
+                <MaterialCommunityIcons name="check-circle" size={16} color={colors.primary} />
               </View>
             )}
           </TouchableOpacity>
         </View>
 
-        <Divider style={styles.divider} />
+        <Divider style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />
 
         {/* Primary Accent Color Palette Picker */}
-        <Text style={styles.colorPaletteTitle}>Accent Color Palette</Text>
+        <Text style={[styles.colorPaletteTitle, { color: colors.onSurface }]}>Accent Color Palette</Text>
         <View style={styles.colorPaletteRow}>
           {['#6366F1', '#8B5CF6', '#10B981', '#F59E0B', '#F43F5E'].map((color) => (
             <TouchableOpacity
@@ -225,11 +245,11 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
               style={[
                 styles.colorDot,
                 { backgroundColor: color },
-                selectedAccent === color && styles.colorDotSelected,
+                accentColor === color && styles.colorDotSelected,
               ]}
               onPress={() => handleSelectAccent(color)}
             >
-              {selectedAccent === color && (
+              {accentColor === color && (
                 <MaterialCommunityIcons name="check" size={16} color="#FFFFFF" />
               )}
             </TouchableOpacity>
@@ -237,21 +257,42 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
         </View>
       </List.Section>
 
-      {/* Basic Usage & System Info Section */}
-      <List.Section style={styles.section}>
-        <List.Subheader style={styles.subheader}>USAGE & APP INFO</List.Subheader>
+      {/* Accurate Usage & System Info Section */}
+      <List.Section style={[styles.section, { backgroundColor: colors.surfaceContainer, borderColor: colors.outlineVariant }]}>
+        <List.Subheader style={[styles.subheader, { color: colors.primary }]}>USAGE & APP INFO</List.Subheader>
 
         <BuddyListItem
           title="App Version"
-          description="v2.4.0 (Material Design 3 Edition)"
+          description="v1.0.0 (Production Release)"
           leftIcon="information-outline"
         />
-        <Divider style={styles.divider} />
+        <Divider style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />
 
         <BuddyListItem
-          title="Storage & Offline Sync"
-          description="Local Encrypted SQLite Cache"
-          leftIcon="database-outline"
+          title="Active AI Engine"
+          description={activeEngine}
+          leftIcon="robot-outline"
+        />
+        <Divider style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />
+
+        <BuddyListItem
+          title="Backend & Storage"
+          description="Supabase Cloud (PostgreSQL & Edge Functions)"
+          leftIcon="cloud-check-outline"
+        />
+        <Divider style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />
+
+        <BuddyListItem
+          title="API Key Security"
+          description="Server-Side Encrypted via Supabase Secrets"
+          leftIcon="shield-lock-outline"
+        />
+        <Divider style={[styles.divider, { backgroundColor: colors.outlineVariant }]} />
+
+        <BuddyListItem
+          title="Framework"
+          description="Expo React Native • Material Design 3"
+          leftIcon="application-outline"
         />
       </List.Section>
 
@@ -260,9 +301,9 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
         visible={!!toastMsg}
         onDismiss={() => setToastMsg('')}
         duration={3000}
-        style={{ backgroundColor: theme.colors.surfaceContainerHighest }}
+        style={{ backgroundColor: colors.surfaceContainerHighest }}
       >
-        <Text style={{ color: theme.colors.onSurface }}>{toastMsg}</Text>
+        <Text style={{ color: colors.onSurface }}>{toastMsg}</Text>
       </Snackbar>
     </ScrollView>
   );
@@ -271,7 +312,6 @@ export default function ProfileScreen({ onBack }: ProfileScreenProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.background,
   },
   content: {
     padding: theme.spacing.lg,
@@ -288,7 +328,6 @@ const styles = StyleSheet.create({
   },
   topBarTitle: {
     ...theme.typography.headline,
-    color: theme.colors.onBackground,
     fontWeight: 'bold',
   },
   avatarHeaderContainer: {
@@ -305,30 +344,25 @@ const styles = StyleSheet.create({
     height: 96,
     borderRadius: 48,
     borderWidth: 3,
-    borderColor: theme.colors.primary,
   },
   editBadge: {
     position: 'absolute',
     bottom: 0,
     right: 0,
-    backgroundColor: theme.colors.primary,
     width: 32,
     height: 32,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
-    borderColor: theme.colors.background,
   },
   avatarName: {
     ...theme.typography.title,
-    color: theme.colors.onSurface,
     fontWeight: 'bold',
     fontSize: 20,
   },
   avatarEmail: {
     ...theme.typography.body,
-    color: theme.colors.onSurfaceVariant,
     fontSize: 13,
     marginTop: 2,
   },
@@ -338,25 +372,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
   },
   changePicText: {
-    color: theme.colors.primary,
     fontWeight: 'bold',
     fontSize: 13,
   },
   section: {
-    backgroundColor: theme.colors.surfaceContainer,
     borderRadius: theme.roundness.xl,
     padding: theme.spacing.md,
     marginBottom: theme.spacing.lg,
     borderWidth: 1,
-    borderColor: theme.colors.outlineVariant,
+    overflow: 'hidden',
   },
   subheader: {
-    color: theme.colors.primary,
+    fontSize: 12,
     fontWeight: 'bold',
-    fontSize: 11,
     letterSpacing: 1,
-    paddingHorizontal: 0,
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   themeOptionsGrid: {
     flexDirection: 'row',
@@ -365,27 +395,20 @@ const styles = StyleSheet.create({
   },
   themeOptionCard: {
     flex: 1,
-    backgroundColor: theme.colors.surfaceContainerHighest,
     borderRadius: theme.roundness.lg,
-    padding: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    borderColor: theme.colors.outlineVariant,
     position: 'relative',
   },
   themeOptionCardActive: {
-    backgroundColor: theme.colors.primaryContainer,
-    borderColor: theme.colors.primary,
+    borderWidth: 2,
   },
   themeOptionTitle: {
-    color: theme.colors.onSurfaceVariant,
     fontSize: 13,
     fontWeight: 'bold',
-    marginTop: theme.spacing.xs,
-  },
-  themeOptionTitleActive: {
-    color: theme.colors.onPrimaryContainer,
+    marginTop: 6,
   },
   checkBadge: {
     position: 'absolute',
@@ -393,19 +416,19 @@ const styles = StyleSheet.create({
     right: 6,
   },
   divider: {
-    marginVertical: theme.spacing.md,
-    backgroundColor: theme.colors.outlineVariant,
+    height: 1,
+    marginVertical: theme.spacing.sm,
   },
   colorPaletteTitle: {
-    color: theme.colors.onSurface,
-    fontSize: 14,
-    fontWeight: 'bold',
+    fontSize: 13,
+    fontWeight: '600',
     marginBottom: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
   },
   colorPaletteRow: {
     flexDirection: 'row',
     gap: theme.spacing.md,
-    paddingVertical: theme.spacing.xs,
+    alignItems: 'center',
   },
   colorDot: {
     width: 36,

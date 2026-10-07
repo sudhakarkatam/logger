@@ -46,9 +46,25 @@ export const DEFAULT_PRESETS: Record<string, string[]> = {
   other: ['Study 📚', 'Water Plants 🪴', 'Read Book 📖'],
 };
 
-export type Provider = 'gemini' | 'groq' | 'openrouter' | 'openai' | 'anthropic';
+export type Provider = 'mistral' | 'gemini' | 'groq' | 'openrouter' | 'openai' | 'anthropic';
+
+export const PROVIDER_KEY_MAP: Record<Provider, string> = {
+  mistral: 'MISTRAL_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+};
 
 export const QUICK_MODELS: Record<Provider, { id: string; label: string; free: boolean }[]> = {
+  mistral: [
+    { id: 'codestral-2508', label: 'Codestral 2508', free: true },
+    { id: 'codestral-latest', label: 'Codestral Latest', free: true },
+    { id: 'mistral-large-latest', label: 'Mistral Large', free: false },
+    { id: 'mistral-small-latest', label: 'Mistral Small', free: true },
+    { id: 'open-mistral-nemo', label: 'Mistral Nemo', free: true },
+  ],
   groq: [
     { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', free: true },
     { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', free: true },
@@ -78,17 +94,19 @@ export const QUICK_MODELS: Record<Provider, { id: string; label: string; free: b
 };
 
 export const PROVIDER_DISPLAY: Record<Provider, string> = {
+  mistral: 'Mistral AI',
+  gemini: 'Google Gemini',
   groq: 'Groq',
-  gemini: 'Gemini',
   openrouter: 'OpenRouter',
   openai: 'OpenAI',
   anthropic: 'Anthropic',
 };
 
 export const PROVIDER_HINTS: Record<Provider, string> = {
-  gemini: 'Set GEMINI_API_KEY in your Supabase Edge Function Secrets. Models: gemini-2.0-flash, gemini-2.5-pro.',
-  groq: 'Set GROQ_API_KEY in your Supabase Edge Function Secrets. Models: llama-3.3-70b-versatile, etc.',
-  openrouter: 'Set OPENROUTER_API_KEY in your Supabase Edge Function Secrets. Allows free models.',
-  openai: 'Set OPENAI_API_KEY in your Supabase Edge Function Secrets.',
-  anthropic: 'Set ANTHROPIC_API_KEY in your Supabase Edge Function Secrets.',
+  mistral: 'Uses MISTRAL_API_KEY from Supabase Secrets. Default: codestral-2508.',
+  gemini: 'Uses GEMINI_API_KEY from Supabase Secrets.',
+  groq: 'Uses GROQ_API_KEY from Supabase Secrets.',
+  openrouter: 'Uses OPENROUTER_API_KEY from Supabase Secrets.',
+  openai: 'Uses OPENAI_API_KEY from Supabase Secrets.',
+  anthropic: 'Uses ANTHROPIC_API_KEY from Supabase Secrets.',
 };

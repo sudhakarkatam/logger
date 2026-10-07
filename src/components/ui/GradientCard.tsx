@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, View, ViewStyle } from 'react-native';
-import { md3Colors } from '../theme';
+import { md3Colors } from '../../theme';
 
 interface GradientCardProps {
   children: React.ReactNode;

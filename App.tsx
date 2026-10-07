@@ -18,39 +18,26 @@ import PantryTab from './src/components/PantryTab';
 import TimelineTab from './src/components/TimelineTab';
 import SettingsTab from './src/components/SettingsTab';
 import NotificationManagerScreen from './src/components/NotificationManagerScreen';
-import AlarmHubScreen from './src/components/AlarmHubScreen';
 import NotificationHubTab from './src/components/NotificationHubTab';
 import AppNavigator from './src/navigation/AppNavigator';
 import { TabType } from './src/navigation/types';
-import { md3Colors, md3Typography } from './src/theme';
-import { PaperProvider, MD3DarkTheme } from 'react-native-paper';
+import { AppThemeProvider, useAppTheme, md3Typography } from './src/theme';
+import { PaperProvider, MD3DarkTheme, MD3LightTheme } from 'react-native-paper';
 
-const paperTheme = {
-  ...MD3DarkTheme,
-  colors: {
-    ...MD3DarkTheme?.colors,
-    primary: md3Colors.primary,
-    surface: md3Colors.surfaceContainer,
-    background: md3Colors.background,
-    secondaryContainer: md3Colors.secondaryContainer,
-    onSecondaryContainer: md3Colors.onSecondaryContainer,
-  },
-};
-
-export default function App() {
+function MainAppContent() {
+  const { isDark, colors } = useAppTheme();
   const [activeTab, setActiveTab] = useState<TabType>('home');
   const [logTrigger, setLogTrigger] = useState(0);
   const [initialChatPrefix, setInitialChatPrefix] = useState<string | null>(null);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [isNotifManagerOpen, setIsNotifManagerOpen] = useState(false);
-  const [isAlarmHubOpen, setIsAlarmHubOpen] = useState(false);
 
   const { width } = useWindowDimensions();
   const isDesktop = width > 768;
 
-  const isFullScreenView = isNotifManagerOpen || isAlarmHubOpen;
+  const isFullScreenView = isNotifManagerOpen;
 
-  // Safely track Software Keyboard visibility to hide Bottom Navigation Bar when typing
+  // Safely track Software Keyboard visibility
   useEffect(() => {
     if (typeof Keyboard === 'undefined' || !Keyboard?.addListener) return;
 
@@ -73,24 +60,20 @@ export default function App() {
   // Standard Mobile Android Back Navigation Handler
   useEffect(() => {
     const onBackPress = () => {
-      if (isAlarmHubOpen) {
-        setIsAlarmHubOpen(false);
-        return true;
-      }
       if (isNotifManagerOpen) {
         setIsNotifManagerOpen(false);
         return true;
       }
       if (activeTab !== 'home') {
         setActiveTab('home');
-        return true; // Prevent default app exit, navigate back to Home
+        return true;
       }
-      return false; // On Home screen, default behavior (exit app)
+      return false;
     };
 
     const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => subscription.remove();
-  }, [activeTab, isNotifManagerOpen, isAlarmHubOpen]);
+  }, [activeTab, isNotifManagerOpen]);
 
   function handleQuickLogFromHome(prefix: string) {
     setInitialChatPrefix(prefix);
@@ -102,20 +85,44 @@ export default function App() {
     setActiveTab(tab);
   }
 
+  const baseTheme = isDark ? MD3DarkTheme : MD3LightTheme;
+  const paperTheme = {
+    ...baseTheme,
+    colors: {
+      ...baseTheme.colors,
+      primary: colors.primary,
+      surface: colors.surfaceContainer,
+      background: colors.background,
+      secondaryContainer: colors.secondaryContainer,
+      onSecondaryContainer: colors.onSecondaryContainer,
+    },
+  };
+
   return (
     <PaperProvider theme={paperTheme}>
-      <SafeAreaProvider>
-      <SafeAreaView style={styles.safeArea} edges={isFullScreenView ? ['right', 'left', 'bottom'] : ['top', 'right', 'left', 'bottom']}>
-        <StatusBar barStyle="light-content" translucent={true} backgroundColor="transparent" />
+      <SafeAreaView
+        style={[styles.safeArea, { backgroundColor: colors.background }]}
+        edges={['top', 'right', 'left', 'bottom']}
+      >
+        <StatusBar
+          barStyle={isDark ? 'light-content' : 'dark-content'}
+          translucent={true}
+          backgroundColor={colors.background}
+        />
 
         {/* Material 3 Top App Bar (Rendered ONLY on Home Page) */}
         {activeTab === 'home' && !isFullScreenView && (
-          <View style={styles.topAppBar}>
+          <View
+            style={[
+              styles.topAppBar,
+              { backgroundColor: colors.surfaceContainer, borderBottomColor: colors.outlineVariant },
+            ]}
+          >
             <View style={styles.headerInner}>
               <TouchableOpacity onPress={() => setActiveTab('home')} style={styles.brandRow} activeOpacity={0.8}>
                 <View>
-                  <Text style={styles.headerTitle}>Buddy</Text>
-                  <Text style={styles.headerSubtitle}>AI Personal Assistant</Text>
+                  <Text style={[styles.headerTitle, { color: colors.onBackground }]}>Buddy</Text>
+                  <Text style={[styles.headerSubtitle, { color: colors.onSurfaceVariant }]}>AI Personal Assistant</Text>
                 </View>
               </TouchableOpacity>
 
@@ -128,20 +135,23 @@ export default function App() {
                 />
               )}
 
-              <View style={styles.statusBadge}>
-                <View style={styles.statusDot} />
-                <Text style={styles.statusText}>Cloud Synced</Text>
+              <View
+                style={[
+                  styles.statusBadge,
+                  { backgroundColor: colors.surfaceContainerHighest, borderColor: colors.outlineVariant },
+                ]}
+              >
+                <View style={[styles.statusDot, { backgroundColor: colors.catExpense }]} />
+                <Text style={[styles.statusText, { color: colors.onSurfaceVariant }]}>Cloud Synced</Text>
               </View>
             </View>
           </View>
         )}
 
         {/* Body Viewport */}
-        <View style={styles.bodyWrapper}>
+        <View style={[styles.bodyWrapper, { backgroundColor: colors.background }]}>
           <View style={styles.bodyContent}>
-            {isAlarmHubOpen ? (
-              <AlarmHubScreen onBack={() => setIsAlarmHubOpen(false)} />
-            ) : isNotifManagerOpen ? (
+            {isNotifManagerOpen ? (
               <NotificationManagerScreen onBack={() => setIsNotifManagerOpen(false)} />
             ) : (
               <>
@@ -158,15 +168,12 @@ export default function App() {
                   />
                 )}
                 {activeTab === 'analytics' && <AnalyticsTab key={logTrigger} />}
-                {activeTab === 'notifications' && (
-                  <NotificationHubTab onOpenAlarmHub={() => setIsAlarmHubOpen(true)} />
-                )}
+                {activeTab === 'notifications' && <NotificationHubTab />}
                 {activeTab === 'pantry' && <PantryTab />}
                 {activeTab === 'timeline' && <TimelineTab key={logTrigger} />}
                 {activeTab === 'settings' && (
                   <SettingsTab
                     onOpenNotifManager={() => setIsNotifManagerOpen(true)}
-                    onOpenAlarmHub={() => setIsAlarmHubOpen(true)}
                     onOpenJournal={() => setActiveTab('timeline')}
                     onOpenPantry={() => setActiveTab('pantry')}
                   />
@@ -176,7 +183,7 @@ export default function App() {
           </View>
         </View>
 
-        {/* Mobile Material 3 Bottom Navigation Bar (Hidden when keyboard or full screen is open) */}
+        {/* Mobile Material 3 Bottom Navigation Bar */}
         {!isDesktop && !isKeyboardVisible && !isFullScreenView && (
           <AppNavigator
             activeTab={activeTab}
@@ -185,20 +192,26 @@ export default function App() {
           />
         )}
       </SafeAreaView>
+    </PaperProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppThemeProvider>
+        <MainAppContent />
+      </AppThemeProvider>
     </SafeAreaProvider>
-  </PaperProvider>
   );
 }
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: md3Colors.background,
   },
   topAppBar: {
-    backgroundColor: md3Colors.surfaceContainer,
     borderBottomWidth: 1,
-    borderBottomColor: md3Colors.outlineVariant,
     paddingVertical: 12,
   },
   headerInner: {
@@ -217,39 +230,32 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     ...md3Typography.titleLarge,
-    color: md3Colors.onBackground,
     fontWeight: '800',
     letterSpacing: -0.3,
   },
   headerSubtitle: {
     ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
   },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: md3Colors.surfaceContainerHighest,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: md3Colors.outlineVariant,
   },
   statusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: md3Colors.catExpense,
     marginRight: 6,
   },
   statusText: {
     ...md3Typography.labelSmall,
-    color: md3Colors.onSurfaceVariant,
     fontWeight: 'bold',
   },
   bodyWrapper: {
     flex: 1,
-    backgroundColor: md3Colors.background,
   },
   bodyContent: {
     flex: 1,

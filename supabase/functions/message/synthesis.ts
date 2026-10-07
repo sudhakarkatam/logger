@@ -9,6 +9,7 @@ const timezone = 'Asia/Kolkata';
 // ── API Key Resolution ──
 
 const ENV_KEY_MAP: Record<string, string> = {
+  mistral: 'MISTRAL_API_KEY',
   gemini: 'GEMINI_API_KEY',
   groq: 'GROQ_API_KEY',
   groq2: 'GROQ_API_KEY_2',
@@ -18,6 +19,7 @@ const ENV_KEY_MAP: Record<string, string> = {
 };
 
 const DEFAULT_MODEL_MAP: Record<string, string> = {
+  mistral: 'codestral-2508',
   gemini: 'gemini-2.0-flash',
   groq: 'openai/gpt-oss-120b',
   groq2: 'openai/gpt-oss-120b',
@@ -26,7 +28,7 @@ const DEFAULT_MODEL_MAP: Record<string, string> = {
   anthropic: 'claude-3-5-haiku-latest',
 };
 
-const FALLBACK_CHAIN = ['groq', 'groq2', 'openrouter', 'gemini'];
+const FALLBACK_CHAIN = ['mistral', 'groq', 'groq2', 'openrouter', 'gemini'];
 
 function resolveApiKey(provider: string): string {
   const envVar = ENV_KEY_MAP[provider];
@@ -48,6 +50,7 @@ export async function callLLMDirect(provider: string, apiKey: string, model: str
   }
 
   let baseURL = 'https://api.openai.com/v1';
+  if (provider === 'mistral') baseURL = 'https://api.mistral.ai/v1';
   if (provider === 'groq' || provider === 'groq2') baseURL = 'https://api.groq.com/openai/v1';
   if (provider === 'openrouter') baseURL = 'https://openrouter.ai/api/v1';
 
@@ -92,8 +95,8 @@ export async function callLLM(
   systemPrompt: string,
   userMessage: string
 ): Promise<string> {
-  const preferredProvider = config?.provider || 'groq';
-  const preferredModel = config?.model || DEFAULT_MODEL_MAP[preferredProvider] || 'openai/gpt-oss-120b';
+  const preferredProvider = config?.provider || 'mistral';
+  const preferredModel = config?.model || DEFAULT_MODEL_MAP[preferredProvider] || 'codestral-2508';
 
   const chain = [preferredProvider, ...FALLBACK_CHAIN.filter(p => p !== preferredProvider)];
 

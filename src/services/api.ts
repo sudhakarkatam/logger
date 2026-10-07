@@ -11,6 +11,7 @@ export interface Entry {
   entry_time: string;
   data: Record<string, unknown>;
   tags?: string[];
+  summary?: string;
   created_at: string;
 }
 
@@ -46,8 +47,8 @@ export async function getLocalSettings() {
     if (raw) {
       const parsed = JSON.parse(raw);
       return { 
-        provider: parsed.provider || 'gemini', 
-        model: parsed.model || 'gemini-2.0-flash', 
+        provider: parsed.provider || 'mistral', 
+        model: parsed.model || 'codestral-2508', 
       };
     }
   } catch (err) {
@@ -55,8 +56,8 @@ export async function getLocalSettings() {
   }
   
   return {
-    provider: 'gemini',
-    model: 'gemini-2.0-flash',
+    provider: 'mistral',
+    model: 'codestral-2508',
   };
 }
 

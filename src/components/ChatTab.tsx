@@ -54,10 +54,9 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [chatMode, setChatMode] = useState<'normal' | 'chef' | 'lifegpt'>('normal');
-  const [provider, setProvider] = useState<Provider>('gemini');
-  const [model, setModel] = useState('gemini-2.0-flash');
+  const [provider, setProvider] = useState<Provider>('mistral');
+  const [model, setModel] = useState('codestral-2508');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [showCategoryDrawer, setShowCategoryDrawer] = useState(false);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
   // Draft Context & Undo Toast
@@ -148,12 +147,16 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
     setProvider(newProvider);
     setModel(newModel);
     await saveLocalSettings({ provider: newProvider, model: newModel });
-    setShowModelPicker(false);
   }
 
   async function handleSend(textOverride?: string, cardDraftContext: any = null) {
     const textToSend = textOverride !== undefined ? textOverride : inputText;
     if ((!textToSend.trim() && !selectedImage) || loading) return;
+
+    // Sync with the latest provider/model saved in Settings
+    const activeSettings = await getLocalSettings();
+    if (activeSettings.provider) setProvider(activeSettings.provider);
+    if (activeSettings.model) setModel(activeSettings.model);
 
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -247,10 +250,15 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         setTimeout(() => setShowUndoToast(false), 7000);
       }
     } catch (err: any) {
+      const activeProviderName = provider ? provider.toUpperCase() : 'MISTRAL';
+      const activeModelName = model || 'codestral-2508';
+      const reason = err?.message || String(err) || 'Request failed';
+      const secretName = activeProviderName === 'MISTRAL' ? 'MISTRAL_API_KEY' : `${activeProviderName}_API_KEY`;
+
       const errorMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'ai',
-        text: `⚠️ **Connection Issue**: ${err.message || 'Unable to communicate with AI server.'}`,
+        text: `⚠️ **AI API Failure (${activeProviderName}: ${activeModelName})**\n\n**Reason:** ${reason}\n\n*Please ensure \`${secretName}\` is added in Supabase Secrets or select another provider in Settings.*`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -344,6 +352,21 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Top Logged Feedback Banner (Always on Top, Never over input box) */}
+      {showUndoToast && (
+        <View style={styles.topLoggedBanner}>
+          <View style={styles.topLoggedLeft}>
+            <MaterialCommunityIcons name="check-circle" size={18} color="#10B981" />
+            <Text style={styles.topLoggedText}>
+              Logged {lastLoggedEntry?.category ? `${lastLoggedEntry.category}` : 'entry'}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={handleUndo} style={styles.topLoggedUndoBtn} activeOpacity={0.7}>
+            <Text style={styles.topLoggedUndoText}>UNDO</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Messages Stream */}
       <FlatList
@@ -478,29 +501,6 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         </View>
       )}
 
-      {/* Material 3 Snackbar Undo Toast */}
-      <Portal>
-        <Snackbar
-          visible={showUndoToast}
-          onDismiss={() => setShowUndoToast(false)}
-          duration={7000}
-          action={{
-            label: 'UNDO',
-            onPress: handleUndo,
-            textColor: '#818CF8',
-          }}
-          style={{
-            backgroundColor: theme.colors.surfaceContainerHighest,
-            borderRadius: theme.roundness.md,
-            marginBottom: 80,
-          }}
-        >
-          <Text style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-            Logged {lastLoggedEntry?.category || 'entry'}
-          </Text>
-        </Snackbar>
-      </Portal>
-
       {/* Collapsible Category Drawer */}
       {showCategoryDrawer && (
         <View style={styles.drawerContainer}>
@@ -623,7 +623,7 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
 
           {/* Center Flexible Multiline TextInput */}
           <TextInput
-            style={styles.composerInput}
+            style={[styles.composerInput, { maxHeight: 110 }]}
             placeholder={
               chatMode === 'chef'
                 ? 'Ask Chef AI for recipes...'
@@ -635,7 +635,6 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
             value={inputText}
             onChangeText={setInputText}
             multiline
-            maxHeight={110}
           />
 
           {/* Right Controls: Mic Dictation + Send Button */}
@@ -672,28 +671,8 @@ export default function ChatTab({ onLogAdded, initialText }: ChatTabProps) {
         </Surface>
       </View>
 
-      {/* Model Engine Selector Modal */}
+      {/* Quick Log Modal & Portal elements */}
       <Portal>
-        <PaperModal visible={showModelPicker} onDismiss={() => setShowModelPicker(false)}>
-          <View style={styles.modelModalBox}>
-            <Text style={styles.modelModalTitle}>🤖 Select Grok AI Engine</Text>
-            {QUICK_MODELS[provider]?.map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={[styles.modelOptionRow, model === m.id && styles.modelOptionSelected]}
-                onPress={() => handleSelectModel(provider, m.id)}
-              >
-                <Text style={[styles.modelOptionText, model === m.id && styles.modelOptionTextActive]}>
-                  {m.label}
-                </Text>
-                {m.free && <Text style={styles.freeBadge}>FREE</Text>}
-              </TouchableOpacity>
-            ))}
-            <PaperButton onPress={() => setShowModelPicker(false)} style={{ marginTop: 12 }}>
-              Close
-            </PaperButton>
-          </View>
-        </PaperModal>
 
         {/* MD3 Quick Log Value Input Modal */}
         <PaperModal
@@ -1030,31 +1009,29 @@ const styles = StyleSheet.create({
   },
   composerSurface: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
+    alignItems: 'center',
     backgroundColor: theme.colors.surfaceContainer,
     borderRadius: theme.roundness.full,
     borderWidth: 1,
     borderColor: theme.colors.outlineVariant,
-    paddingHorizontal: theme.spacing.xs,
+    paddingHorizontal: 6,
     paddingVertical: 4,
-    minHeight: 52,
+    minHeight: 50,
   },
   leftControlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    paddingBottom: 4,
   },
   rightControlsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingBottom: 4,
   },
   composerIconBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1063,18 +1040,49 @@ const styles = StyleSheet.create({
     color: theme.colors.onSurface,
     fontSize: 15,
     lineHeight: 20,
-    paddingHorizontal: theme.spacing.xs,
-    paddingVertical: Platform.OS === 'ios' ? 10 : 8,
+    paddingHorizontal: 8,
+    paddingVertical: Platform.OS === 'ios' ? 8 : 4,
     maxHeight: 110,
     textAlignVertical: 'center',
   },
   sendBtnCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: theme.colors.surfaceContainerHighest,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  topLoggedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: theme.colors.surfaceContainerHigh,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.outlineVariant,
+  },
+  topLoggedLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  topLoggedText: {
+    color: theme.colors.onSurface,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  topLoggedUndoBtn: {
+    backgroundColor: theme.colors.primaryContainer,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  topLoggedUndoText: {
+    color: theme.colors.onPrimaryContainer,
+    fontSize: 12,
+    fontWeight: 'bold',
   },
   sendBtnCircleActive: {
     backgroundColor: theme.colors.primary,
